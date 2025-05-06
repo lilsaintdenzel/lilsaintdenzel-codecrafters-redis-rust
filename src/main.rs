@@ -14,7 +14,7 @@ fn main() {
             // }
 
             Ok(mut stream) => {
-                stream.write(b"+PONG\r\n").unwrap();
+                stream.write_all(b"+PONG\r\n").unwrap();
             }
             Err(e) => {
                 println!("error: {}", e);
