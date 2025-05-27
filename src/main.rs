@@ -16,7 +16,7 @@ fn main() {
 
             Ok(mut stream) => {
 
-                let mut buffer = [0, 1024];
+                let mut buffer = [0; 1024];
 
                 loop {
                     match stream.read(&mut buffer) {
