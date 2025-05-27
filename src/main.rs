@@ -15,7 +15,24 @@ fn main() {
             // }
 
             Ok(mut stream) => {
-                stream.write_all(b"+PONG\r\n").unwrap();
+
+                let mut buffer = [0, 1024];
+
+                loop {
+                    match stream.read(&mut buffer) {
+                       Ok(0) => break,
+                       Ok(_) => {
+                        stream.write_all(b"+PONG\r\n").unwrap();
+                        
+                       }
+                          Err(e) => {
+                            println!("error reading from stream: {}", e);
+                            break;
+                          }
+
+
+                    }
+                  
             }
             Err(e) => {
                 println!("error: {}", e);
