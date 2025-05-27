@@ -20,6 +20,7 @@ fn main() {                  // Line 5
                             println!("error reading from stream: {}", e);
                             break;
                         }
+                        
                     }  // Line 22: Close inner match
                 }  // Line 23: Close loop
             }  // Line 24: Close Ok arm
