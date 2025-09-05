@@ -1,6 +1,6 @@
 Redis Server Code Explanation - Restaurant Analogy
 
-This Redis server code works like a restaurant:
+This Redis server code works like a smart restaurant:
 
 **The Restaurant (Server)**
 - Opens on "127.0.0.1:6379" (like a restaurant address)
@@ -11,18 +11,33 @@ This Redis server code works like a restaurant:
 - The waiter stays with that customer the entire time
 - Multiple customers can be served simultaneously
 
-**What Each Waiter Does**
+**How Waiters Understand Orders (Redis Protocol Parser)**
+The waiters now have a special training to understand customer orders! They can decode the restaurant's special ordering format:
+- Customers don't just say "PING" - they speak in a structured way: `*2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n`
+- The waiter (parser) breaks this down:
+  - `*2` = "This order has 2 parts"
+  - `$4\r\nECHO` = "First part is 4 letters: ECHO"
+  - `$3\r\nhey` = "Second part is 3 letters: hey"
+- So the waiter understands: "Customer wants ECHO with argument 'hey'"
+
+**What Each Waiter Does Now**
 1. Listens to what the customer says (reads data)
-2. No matter what they order, always responds "PONG" 
-3. Keeps doing this until the customer leaves
-4. If something goes wrong, the waiter stops serving that customer
+2. **NEW**: Decodes the special restaurant language (Redis protocol)
+3. **NEW**: Checks what the customer actually ordered:
+   - If they say "PING" → responds "PONG" (simple string: `+PONG\r\n`)
+   - If they say "ECHO [something]" → repeats back exactly what they said (bulk string: `$3\r\nhey\r\n`)
+   - If they say something else → defaults to "PONG"
+4. Keeps doing this until the customer leaves
+5. If something goes wrong, the waiter stops serving that customer
 
 **Key Benefits**
 - Multiple customers can be served at once (concurrent connections)
 - One slow customer doesn't block others
 - Each conversation is independent
+- **NEW**: Waiters can understand different types of orders!
+- **NEW**: Responses are properly formatted in the restaurant's language
 
-Right now it's a very simple restaurant - no matter what you order, you always get "PONG" back!
+The restaurant is now much smarter - it can handle different orders and respond appropriately!
 
 ==== CODE WITH RESTAURANT COMMENTS ====
 
@@ -31,6 +46,47 @@ Right now it's a very simple restaurant - no matter what you order, you always g
 use std::io::{Read, Write};  // For talking to customers
 use std::net::TcpListener;   // The restaurant building
 use std::thread;             // Waiters
+
+// 🧠 Special waiter training: How to understand customer orders
+fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
+    let data = String::from_utf8_lossy(&buffer[..n]);
+    let lines: Vec<&str> = data.split("\r\n").collect();
+    
+    // Check if it's a proper order format (*number means "order has X parts")
+    if lines.is_empty() || !lines[0].starts_with('*') {
+        return None;  // Can't understand this order
+    }
+    
+    let array_len: usize = lines[0][1..].parse().ok()?;  // How many parts?
+    let mut args = Vec::new();  // Collect order parts here
+    let mut line_idx = 1;
+    
+    // Parse each part of the order
+    for _ in 0..array_len {
+        // Each part starts with $ and length ($4 means "next part is 4 letters")
+        if line_idx >= lines.len() || !lines[line_idx].starts_with('$') {
+            return None;  // Malformed order
+        }
+        
+        let str_len: usize = lines[line_idx][1..].parse().ok()?;
+        line_idx += 1;
+        
+        // Get the actual word
+        if line_idx >= lines.len() {
+            return None;
+        }
+        
+        let arg = lines[line_idx].to_string();
+        if arg.len() != str_len {
+            return None;  // Length doesn't match
+        }
+        
+        args.push(arg);  // Add this word to the order
+        line_idx += 1;
+    }
+    
+    Some(args)  // Return the understood order
+}
 
 fn main() {
     // 🏪 Open the restaurant at address "127.0.0.1:6379"
@@ -50,9 +106,37 @@ fn main() {
                         // 👂 Listen to what the customer says
                         match stream.read(&mut buffer) {
                             Ok(0) => break,  // Customer left
-                            Ok(_) => {
-                                // 🍽️ No matter what they ordered, serve "PONG"
-                                stream.write_all(b"+PONG\r\n").unwrap();
+                            Ok(n) => {
+                                // 🧠 Try to understand what they ordered using special training
+                                if let Some(args) = parse_redis_command(&buffer, n) {
+                                    if !args.is_empty() {
+                                        let command = args[0].to_uppercase();  // Commands are case-insensitive
+                                        
+                                        // 🍽️ Serve based on what they ordered
+                                        match command.as_str() {
+                                            "PING" => {
+                                                // Simple order: just respond "PONG"
+                                                stream.write_all(b"+PONG\r\n").unwrap();
+                                            }
+                                            "ECHO" => {
+                                                // Echo order: repeat back what they said
+                                                if args.len() > 1 {
+                                                    let arg = &args[1];
+                                                    // Format response as: $length\r\nvalue\r\n
+                                                    let response = format!("${}\r\n{}\r\n", arg.len(), arg);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
+                                            _ => {
+                                                // Unknown order: default to PONG
+                                                stream.write_all(b"+PONG\r\n").unwrap();
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // 🤷 Couldn't understand the order format, default to PONG
+                                    stream.write_all(b"+PONG\r\n").unwrap();
+                                }
                             }
                             Err(e) => {
                                 // 😵 Something went wrong with this customer
@@ -72,4 +156,11 @@ fn main() {
 }
 ```
 
-The key insight: **Each `thread::spawn` creates a new waiter** who can work independently, so the restaurant can serve many customers simultaneously instead of one at a time!
+**Key Insights:**
+1. **Each `thread::spawn` creates a new waiter** who can work independently, so the restaurant can serve many customers simultaneously instead of one at a time!
+
+2. **The `parse_redis_command` function is like waiter training** - it teaches waiters how to decode the restaurant's special ordering language (Redis RESP protocol).
+
+3. **The restaurant now has a proper menu system** - different orders (`PING`, `ECHO`) get different responses, making it much more useful than just saying "PONG" to everything!
+
+4. **Smart fallback system** - if a waiter can't understand an order, they default to the simple "PONG" response rather than breaking.
