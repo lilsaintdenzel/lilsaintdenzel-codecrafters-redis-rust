@@ -1,0 +1,75 @@
+Redis Server Code Explanation - Restaurant Analogy
+
+This Redis server code works like a restaurant:
+
+**The Restaurant (Server)**
+- Opens on "127.0.0.1:6379" (like a restaurant address)
+- Waits for customers (clients) to walk in
+
+**When Customers Arrive**
+- Each customer gets their own waiter (thread) 
+- The waiter stays with that customer the entire time
+- Multiple customers can be served simultaneously
+
+**What Each Waiter Does**
+1. Listens to what the customer says (reads data)
+2. No matter what they order, always responds "PONG" 
+3. Keeps doing this until the customer leaves
+4. If something goes wrong, the waiter stops serving that customer
+
+**Key Benefits**
+- Multiple customers can be served at once (concurrent connections)
+- One slow customer doesn't block others
+- Each conversation is independent
+
+Right now it's a very simple restaurant - no matter what you order, you always get "PONG" back!
+
+==== CODE WITH RESTAURANT COMMENTS ====
+
+```rust
+// Restaurant imports - tools we need
+use std::io::{Read, Write};  // For talking to customers
+use std::net::TcpListener;   // The restaurant building
+use std::thread;             // Waiters
+
+fn main() {
+    // 🏪 Open the restaurant at address "127.0.0.1:6379"
+    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+
+    // 🚪 Wait for customers to walk through the door
+    for stream in listener.incoming() {
+        match stream {
+            // ✅ A customer successfully entered
+            Ok(mut stream) => {
+                // 👨‍🍳 Assign a dedicated waiter to this customer
+                thread::spawn(move || {
+                    let mut buffer = [0; 1024];  // Waiter's notepad
+                    
+                    // 🔄 Keep serving this customer
+                    loop {
+                        // 👂 Listen to what the customer says
+                        match stream.read(&mut buffer) {
+                            Ok(0) => break,  // Customer left
+                            Ok(_) => {
+                                // 🍽️ No matter what they ordered, serve "PONG"
+                                stream.write_all(b"+PONG\r\n").unwrap();
+                            }
+                            Err(e) => {
+                                // 😵 Something went wrong with this customer
+                                println!("error reading from stream: {}", e);
+                                break;  // Stop serving them
+                            }
+                        }
+                    }
+                });  // End of waiter's job
+            }
+            // ❌ Someone tried to enter but couldn't
+            Err(e) => {
+                println!("error: {}", e);
+            }
+        }
+    }  // Keep waiting for more customers
+}
+```
+
+The key insight: **Each `thread::spawn` creates a new waiter** who can work independently, so the restaurant can serve many customers simultaneously instead of one at a time!
