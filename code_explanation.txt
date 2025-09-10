@@ -26,6 +26,8 @@ The waiters now have a special training to understand customer orders! They can 
 3. **NEW**: Checks what the customer actually ordered:
    - If they say "PING" → responds "PONG" (simple string: `+PONG\r\n`)
    - If they say "ECHO [something]" → repeats back exactly what they said (bulk string: `$3\r\nhey\r\n`)
+   - **If they say "SET [key] [value]" → stores it in the restaurant's memory book and says "OK"**
+   - **If they say "GET [key]" → looks up the key in the memory book and tells them the value**
    - If they say something else → defaults to "PONG"
 4. Keeps doing this until the customer leaves
 5. If something goes wrong, the waiter stops serving that customer
@@ -36,16 +38,20 @@ The waiters now have a special training to understand customer orders! They can 
 - Each conversation is independent
 - **NEW**: Waiters can understand different types of orders!
 - **NEW**: Responses are properly formatted in the restaurant's language
+- **NEW**: The restaurant has a shared memory book that all waiters can access safely
+- **NEW**: Customers can store and retrieve information (SET/GET commands)
 
-The restaurant is now much smarter - it can handle different orders and respond appropriately!
+The restaurant is now much smarter - it can handle different orders, remember things, and respond appropriately!
 
 ==== CODE WITH RESTAURANT COMMENTS ====
 
 ```rust
 // Restaurant imports - tools we need
-use std::io::{Read, Write};  // For talking to customers
-use std::net::TcpListener;   // The restaurant building
-use std::thread;             // Waiters
+use std::collections::HashMap;  // The restaurant's memory book
+use std::io::{Read, Write};     // For talking to customers
+use std::net::TcpListener;      // The restaurant building
+use std::sync::{Arc, Mutex};    // Safe way to share the memory book between waiters
+use std::thread;                // Waiters
 
 // 🧠 Special waiter training: How to understand customer orders
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
@@ -91,12 +97,16 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
 fn main() {
     // 🏪 Open the restaurant at address "127.0.0.1:6379"
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    // 📖 Create the restaurant's shared memory book (thread-safe storage)
+    let data_store = Arc::new(Mutex::new(HashMap::<String, String>::new()));
 
     // 🚪 Wait for customers to walk through the door
     for stream in listener.incoming() {
         match stream {
             // ✅ A customer successfully entered
             Ok(mut stream) => {
+                // 🔑 Give the waiter a copy of the key to the memory book
+                let store_clone = Arc::clone(&data_store);
                 // 👨‍🍳 Assign a dedicated waiter to this customer
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];  // Waiter's notepad
@@ -125,6 +135,38 @@ fn main() {
                                                     // Format response as: $length\r\nvalue\r\n
                                                     let response = format!("${}\r\n{}\r\n", arg.len(), arg);
                                                     stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
+                                            "SET" => {
+                                                // 📝 Customer wants to store something: "SET key value"
+                                                if args.len() >= 3 {
+                                                    let key = &args[1];
+                                                    let value = &args[2];
+                                                    // 🔒 Lock the memory book so only this waiter can write
+                                                    let mut store = store_clone.lock().unwrap();
+                                                    // 📖 Write the key-value pair in the book
+                                                    store.insert(key.clone(), value.clone());
+                                                    // ✅ Tell customer "OK, I wrote it down!"
+                                                    stream.write_all(b"+OK\r\n").unwrap();
+                                                }
+                                            }
+                                            "GET" => {
+                                                // 🔍 Customer wants to retrieve something: "GET key"
+                                                if args.len() >= 2 {
+                                                    let key = &args[1];
+                                                    // 🔒 Lock the memory book to read safely
+                                                    let store = store_clone.lock().unwrap();
+                                                    match store.get(key) {
+                                                        Some(value) => {
+                                                            // 📖 Found it! Tell them the value
+                                                            let response = format!("${}\r\n{}\r\n", value.len(), value);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        None => {
+                                                            // 🤷 Not found, tell them it doesn't exist
+                                                            stream.write_all(b"$-1\r\n").unwrap();
+                                                        }
+                                                    }
                                                 }
                                             }
                                             _ => {
@@ -161,6 +203,14 @@ fn main() {
 
 2. **The `parse_redis_command` function is like waiter training** - it teaches waiters how to decode the restaurant's special ordering language (Redis RESP protocol).
 
-3. **The restaurant now has a proper menu system** - different orders (`PING`, `ECHO`) get different responses, making it much more useful than just saying "PONG" to everything!
+3. **The restaurant now has a proper menu system** - different orders (`PING`, `ECHO`, `SET`, `GET`) get different responses, making it much more useful than just saying "PONG" to everything!
 
 4. **Smart fallback system** - if a waiter can't understand an order, they default to the simple "PONG" response rather than breaking.
+
+5. **The memory book (`HashMap`) is shared safely** - `Arc<Mutex<>>` ensures multiple waiters can access the same memory book without conflicts:
+   - `Arc` = Multiple waiters can have a "reference" to the same book
+   - `Mutex` = Only one waiter can read/write in the book at a time (prevents data corruption)
+
+6. **Thread-safe storage operations**:
+   - `SET`: Waiter locks the book, writes the key-value pair, unlocks, says "OK"
+   - `GET`: Waiter locks the book, looks up the key, unlocks, tells customer the value (or "not found")
