@@ -1,6 +1,8 @@
 #![allow(unused_imports)]
+use std::collections::HashMap;
 use std::io::{Read, Write};
 use std::net::TcpListener;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
@@ -41,10 +43,12 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    let data_store = Arc::new(Mutex::new(HashMap::<String, String>::new()));
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
+                let store_clone = Arc::clone(&data_store);
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
                     loop {
@@ -63,6 +67,30 @@ fn main() {
                                                     let arg = &args[1];
                                                     let response = format!("${}\r\n{}\r\n", arg.len(), arg);
                                                     stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
+                                            "SET" => {
+                                                if args.len() >= 3 {
+                                                    let key = &args[1];
+                                                    let value = &args[2];
+                                                    let mut store = store_clone.lock().unwrap();
+                                                    store.insert(key.clone(), value.clone());
+                                                    stream.write_all(b"+OK\r\n").unwrap();
+                                                }
+                                            }
+                                            "GET" => {
+                                                if args.len() >= 2 {
+                                                    let key = &args[1];
+                                                    let store = store_clone.lock().unwrap();
+                                                    match store.get(key) {
+                                                        Some(value) => {
+                                                            let response = format!("${}\r\n{}\r\n", value.len(), value);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        None => {
+                                                            stream.write_all(b"$-1\r\n").unwrap();
+                                                        }
+                                                    }
                                                 }
                                             }
                                             _ => {
