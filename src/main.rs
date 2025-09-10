@@ -4,6 +4,13 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Clone)]
+struct StoredValue {
+    value: String,
+    expires_at: Option<u128>, // milliseconds since epoch
+}
 
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     let data = String::from_utf8_lossy(&buffer[..n]);
@@ -43,7 +50,7 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
 
 fn main() {
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    let data_store = Arc::new(Mutex::new(HashMap::<String, String>::new()));
+    let data_store = Arc::new(Mutex::new(HashMap::<String, StoredValue>::new()));
 
     for stream in listener.incoming() {
         match stream {
@@ -73,19 +80,61 @@ fn main() {
                                                 if args.len() >= 3 {
                                                     let key = &args[1];
                                                     let value = &args[2];
+                                                    
+                                                    let mut expires_at = None;
+                                                    
+                                                    // Check for expiration options (PX milliseconds)
+                                                    if args.len() >= 5 {
+                                                        let option = args[3].to_uppercase();
+                                                        if option == "PX" {
+                                                            if let Ok(ms) = args[4].parse::<u128>() {
+                                                                let now = SystemTime::now()
+                                                                    .duration_since(UNIX_EPOCH)
+                                                                    .unwrap()
+                                                                    .as_millis();
+                                                                expires_at = Some(now + ms);
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    let stored_value = StoredValue {
+                                                        value: value.clone(),
+                                                        expires_at,
+                                                    };
+                                                    
                                                     let mut store = store_clone.lock().unwrap();
-                                                    store.insert(key.clone(), value.clone());
+                                                    store.insert(key.clone(), stored_value);
                                                     stream.write_all(b"+OK\r\n").unwrap();
                                                 }
                                             }
                                             "GET" => {
                                                 if args.len() >= 2 {
                                                     let key = &args[1];
-                                                    let store = store_clone.lock().unwrap();
+                                                    let mut store = store_clone.lock().unwrap();
+                                                    
                                                     match store.get(key) {
-                                                        Some(value) => {
-                                                            let response = format!("${}\r\n{}\r\n", value.len(), value);
-                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        Some(stored_value) => {
+                                                            // Check if the key has expired
+                                                            if let Some(expires_at) = stored_value.expires_at {
+                                                                let now = SystemTime::now()
+                                                                    .duration_since(UNIX_EPOCH)
+                                                                    .unwrap()
+                                                                    .as_millis();
+                                                                
+                                                                if now >= expires_at {
+                                                                    // Key has expired, remove it and return null
+                                                                    store.remove(key);
+                                                                    stream.write_all(b"$-1\r\n").unwrap();
+                                                                } else {
+                                                                    // Key hasn't expired, return the value
+                                                                    let response = format!("${}\r\n{}\r\n", stored_value.value.len(), stored_value.value);
+                                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                                }
+                                                            } else {
+                                                                // Key doesn't expire, return the value
+                                                                let response = format!("${}\r\n{}\r\n", stored_value.value.len(), stored_value.value);
+                                                                stream.write_all(response.as_bytes()).unwrap();
+                                                            }
                                                         }
                                                         None => {
                                                             stream.write_all(b"$-1\r\n").unwrap();
