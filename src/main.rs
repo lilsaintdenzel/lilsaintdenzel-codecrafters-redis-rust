@@ -1,5 +1,6 @@
 #![allow(unused_imports)]
 use std::collections::HashMap;
+use std::env;
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::{Arc, Mutex};
@@ -10,6 +11,12 @@ use std::time::{SystemTime, UNIX_EPOCH};
 struct StoredValue {
     value: String,
     expires_at: Option<u128>, // milliseconds since epoch
+}
+
+#[derive(Clone)]
+struct Config {
+    dir: String,
+    dbfilename: String,
 }
 
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
@@ -48,7 +55,41 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     Some(args)
 }
 
+fn parse_args() -> Config {
+    let args: Vec<String> = env::args().collect();
+    let mut dir = "/tmp/redis-data".to_string();
+    let mut dbfilename = "dump.rdb".to_string();
+    
+    let mut i = 1;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--dir" => {
+                if i + 1 < args.len() {
+                    dir = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--dbfilename" => {
+                if i + 1 < args.len() {
+                    dbfilename = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    
+    Config { dir, dbfilename }
+}
+
 fn main() {
+    let config = parse_args();
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
     let data_store = Arc::new(Mutex::new(HashMap::<String, StoredValue>::new()));
 
@@ -56,6 +97,7 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 let store_clone = Arc::clone(&data_store);
+                let config_clone = config.clone();
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
                     loop {
@@ -138,6 +180,26 @@ fn main() {
                                                         }
                                                         None => {
                                                             stream.write_all(b"$-1\r\n").unwrap();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            "CONFIG" => {
+                                                if args.len() >= 3 && args[1].to_uppercase() == "GET" {
+                                                    let param = &args[2];
+                                                    match param.to_lowercase().as_str() {
+                                                        "dir" => {
+                                                            let response = format!("*2\r\n$3\r\ndir\r\n${}\r\n{}\r\n", 
+                                                                config_clone.dir.len(), config_clone.dir);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        "dbfilename" => {
+                                                            let response = format!("*2\r\n$10\r\ndbfilename\r\n${}\r\n{}\r\n", 
+                                                                config_clone.dbfilename.len(), config_clone.dbfilename);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        _ => {
+                                                            stream.write_all(b"*0\r\n").unwrap();
                                                         }
                                                     }
                                                 }
