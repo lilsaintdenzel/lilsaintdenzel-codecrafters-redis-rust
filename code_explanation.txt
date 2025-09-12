@@ -29,6 +29,7 @@ The waiters now have a special training to understand customer orders! They can 
    - **If they say "SET [key] [value]" → stores it in the restaurant's memory book and says "OK"**
    - **If they say "SET [key] [value] px [time]" → stores it with an expiration timer (like a special offer that expires!)**
    - **If they say "GET [key]" → looks up the key in the memory book and tells them the value (or "expired" if the timer ran out)**
+   - **If they say "CONFIG GET [setting]" → tells them about the restaurant's configuration (like where backup files are stored)**
    - If they say something else → defaults to "PONG"
 4. Keeps doing this until the customer leaves
 5. If something goes wrong, the waiter stops serving that customer
@@ -50,6 +51,7 @@ The restaurant is now much smarter - it can handle different orders, remember th
 ```rust
 // Restaurant imports - tools we need
 use std::collections::HashMap;  // The restaurant's memory book
+use std::env;                   // For reading management instructions (command line args)
 use std::io::{Read, Write};     // For talking to customers
 use std::net::TcpListener;      // The restaurant building
 use std::sync::{Arc, Mutex};    // Safe way to share the memory book between waiters
@@ -61,6 +63,13 @@ use std::time::{SystemTime, UNIX_EPOCH};  // Restaurant's clock for expiration t
 struct StoredValue {
     value: String,              // What's stored
     expires_at: Option<u128>,   // When it expires (restaurant's clock time)
+}
+
+// 🏪 Restaurant configuration - where to keep backup files
+#[derive(Clone)]
+struct Config {
+    dir: String,                // Directory where backup files are stored
+    dbfilename: String,         // Name of the backup file
 }
 
 // 🧠 Special waiter training: How to understand customer orders
@@ -104,7 +113,47 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     Some(args)  // Return the understood order
 }
 
+// 📋 Restaurant setup: Read management instructions from command line
+fn parse_args() -> Config {
+    let args: Vec<String> = env::args().collect();  // Get command line arguments
+    // 📁 Default filing system setup
+    let mut dir = "/tmp/redis-data".to_string();
+    let mut dbfilename = "dump.rdb".to_string();
+    
+    let mut i = 1;
+    while i < args.len() {
+        // 📖 Read management instructions
+        match args[i].as_str() {
+            "--dir" => {
+                // "Store backup files in this directory"
+                if i + 1 < args.len() {
+                    dir = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--dbfilename" => {
+                // "Name the backup file this"
+                if i + 1 < args.len() {
+                    dbfilename = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    
+    Config { dir, dbfilename }  // Return restaurant configuration
+}
+
 fn main() {
+    // 📋 Read management instructions and set up restaurant configuration
+    let config = parse_args();
     // 🏪 Open the restaurant at address "127.0.0.1:6379"
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
     // 📖 Create the restaurant's shared memory book with expiration timers (thread-safe storage)
@@ -117,6 +166,8 @@ fn main() {
             Ok(mut stream) => {
                 // 🔑 Give the waiter a copy of the key to the memory book
                 let store_clone = Arc::clone(&data_store);
+                // 📋 Give the waiter a copy of the restaurant configuration
+                let config_clone = config.clone();
                 // 👨‍🍳 Assign a dedicated waiter to this customer
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];  // Waiter's notepad
@@ -222,6 +273,30 @@ fn main() {
                                                     }
                                                 }
                                             }
+                                            "CONFIG" => {
+                                                // 📋 Customer asking about restaurant setup: "CONFIG GET dir" or "CONFIG GET dbfilename"
+                                                if args.len() >= 3 && args[1].to_uppercase() == "GET" {
+                                                    let param = &args[2];  // What configuration they want to know
+                                                    match param.to_lowercase().as_str() {
+                                                        "dir" => {
+                                                            // 📁 "Where do you store backup files?"
+                                                            let response = format!("*2\r\n$3\r\ndir\r\n${}\r\n{}\r\n", 
+                                                                config_clone.dir.len(), config_clone.dir);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        "dbfilename" => {
+                                                            // 🗂️ "What's the backup file called?"
+                                                            let response = format!("*2\r\n$10\r\ndbfilename\r\n${}\r\n{}\r\n", 
+                                                                config_clone.dbfilename.len(), config_clone.dbfilename);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        _ => {
+                                                            // 🤷 Don't know that configuration setting
+                                                            stream.write_all(b"*0\r\n").unwrap();
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             _ => {
                                                 // Unknown order: default to PONG
                                                 stream.write_all(b"+PONG\r\n").unwrap();
@@ -274,3 +349,10 @@ fn main() {
    - When storing: `SET key value px 100` sets a 100ms timer using the restaurant's clock
    - When retrieving: GET checks the timer first - if expired, removes the item and says "not found"
    - Timer precision: Uses milliseconds since Unix epoch for accurate timing
+
+8. **Restaurant Configuration System** - like setting up the restaurant's filing system:
+   - `Config` struct stores where the restaurant keeps its backup files
+   - `parse_args()` reads the command line (like management instructions): `--dir /tmp/redis-files --dbfilename dump.rdb`
+   - The restaurant now knows where to store its backup records for persistence
+   - `CONFIG GET` command lets customers ask: "Where do you keep your backup files?"
+   - Waiters can answer questions about the restaurant's setup using the `CONFIG` command
