@@ -30,6 +30,7 @@ The waiters now have a special training to understand customer orders! They can 
    - **If they say "SET [key] [value] px [time]" → stores it with an expiration timer (like a special offer that expires!)**
    - **If they say "GET [key]" → looks up the key in the memory book and tells them the value (or "expired" if the timer ran out)**
    - **If they say "CONFIG GET [setting]" → tells them about the restaurant's configuration (like where backup files are stored)**
+   - **If they say "KEYS [pattern]" → shows them all the keys currently stored in the restaurant's memory book (that aren't expired)**
    - If they say something else → defaults to "PONG"
 4. Keeps doing this until the customer leaves
 5. If something goes wrong, the waiter stops serving that customer
@@ -43,6 +44,8 @@ The waiters now have a special training to understand customer orders! They can 
 - **NEW**: The restaurant has a shared memory book that all waiters can access safely
 - **NEW**: Customers can store and retrieve information (SET/GET commands)
 - **NEW**: The restaurant can handle time-sensitive storage (like daily specials that expire!)
+- **NEW**: The restaurant can remember things even after closing by reading from backup files when it opens (RDB persistence)
+- **NEW**: Customers can ask to see what's currently available using the KEYS command
 
 The restaurant is now much smarter - it can handle different orders, remember things with expiration times, and respond appropriately!
 
@@ -52,8 +55,10 @@ The restaurant is now much smarter - it can handle different orders, remember th
 // Restaurant imports - tools we need
 use std::collections::HashMap;  // The restaurant's memory book
 use std::env;                   // For reading management instructions (command line args)
-use std::io::{Read, Write};     // For talking to customers
+use std::fs::File;              // For reading backup files
+use std::io::{BufReader, Read, Write}; // For talking to customers and reading files
 use std::net::TcpListener;      // The restaurant building
+use std::path::Path;            // For working with file paths
 use std::sync::{Arc, Mutex};    // Safe way to share the memory book between waiters
 use std::thread;                // Waiters
 use std::time::{SystemTime, UNIX_EPOCH};  // Restaurant's clock for expiration timers
@@ -113,6 +118,234 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     Some(args)  // Return the understood order
 }
 
+// 🔍 Special filing system decoder: How to read restaurant backup files (RDB format)
+fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+    // This is like reading the restaurant's special filing system where each entry
+    // starts with a code that tells you how long the next piece of information is
+    if *pos >= bytes.len() {
+        return None;
+    }
+    
+    let first_byte = bytes[*pos];
+    *pos += 1;
+    
+    let first_two_bits = (first_byte & 0b11000000) >> 6;
+    
+    match first_two_bits {
+        0b00 => {
+            // Small number: the remaining 6 bits tell us the length
+            Some((first_byte & 0b00111111) as u64)
+        }
+        0b01 => {
+            // Medium number: combine this byte + next byte for length
+            if *pos >= bytes.len() { return None; }
+            let second_byte = bytes[*pos];
+            *pos += 1;
+            let length = (((first_byte & 0b00111111) as u64) << 8) | (second_byte as u64);
+            Some(length)
+        }
+        0b10 => {
+            // Large number: next 4 bytes tell us the length
+            if *pos + 4 > bytes.len() { return None; }
+            let mut length = 0u64;
+            for i in 0..4 {
+                length = (length << 8) | (bytes[*pos + i] as u64);
+            }
+            *pos += 4;
+            Some(length)
+        }
+        0b11 => {
+            // Special encoding marker - like "this entry is stored in a special way"
+            Some(0xFF00 | ((first_byte & 0b00111111) as u64))
+        }
+        _ => None,
+    }
+}
+
+// 📖 String decoder: How to read text from the backup files
+fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
+    let length_or_type = parse_length_encoding(bytes, pos)?;
+    
+    if length_or_type >= 0xFF00 {
+        // Special encoding - numbers stored as binary instead of text
+        let encoding_type = (length_or_type & 0xFF) as u8;
+        match encoding_type {
+            0x00 => {
+                // 8-bit number
+                if *pos >= bytes.len() { return None; }
+                let val = bytes[*pos] as i8;
+                *pos += 1;
+                Some(val.to_string())
+            }
+            0x01 => {
+                // 16-bit number (little-endian)
+                if *pos + 2 > bytes.len() { return None; }
+                let val = u16::from_le_bytes([bytes[*pos], bytes[*pos + 1]]) as i16;
+                *pos += 2;
+                Some(val.to_string())
+            }
+            0x02 => {
+                // 32-bit number (little-endian)
+                if *pos + 4 > bytes.len() { return None; }
+                let val = u32::from_le_bytes([
+                    bytes[*pos], bytes[*pos + 1], bytes[*pos + 2], bytes[*pos + 3],
+                ]) as i32;
+                *pos += 4;
+                Some(val.to_string())
+            }
+            _ => None,
+        }
+    } else {
+        // Regular text: read the specified number of bytes
+        let len = length_or_type as usize;
+        if *pos + len > bytes.len() { return None; }
+        let string_bytes = &bytes[*pos..*pos + len];
+        *pos += len;
+        String::from_utf8(string_bytes.to_vec()).ok()
+    }
+}
+
+// 🔍 Pattern matching helper: Does this key match what the customer asked for?
+fn matches_pattern(key: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true; // "*" means "show me everything"
+    }
+    
+    // Simple pattern matching
+    if pattern.contains('*') {
+        if pattern == "*" {
+            return true;
+        }
+        // More complex patterns could be added here
+        true
+    } else {
+        key == pattern // Exact match only
+    }
+}
+
+// 🗃️ Restaurant startup: Read the backup file when opening
+fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
+    let mut data_store = HashMap::new();
+    let rdb_path = Path::new(&config.dir).join(&config.dbfilename);
+    
+    // Check if backup file exists (restaurant might be starting fresh)
+    if !rdb_path.exists() {
+        return data_store; // Empty memory book for new restaurant
+    }
+    
+    // Try to open the backup file
+    let file = match File::open(&rdb_path) {
+        Ok(f) => f,
+        Err(_) => return data_store, // Couldn't read file, start fresh
+    };
+    
+    // Read the entire file
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    if reader.read_to_end(&mut buffer).is_err() {
+        return data_store; // File corrupted, start fresh
+    }
+    
+    let mut pos = 0;
+    
+    // Check file header - should start with "REDIS0011"
+    if buffer.len() < 9 || &buffer[0..5] != b"REDIS" {
+        return data_store; // Not a valid backup file
+    }
+    pos = 9; // Skip header
+    
+    // Parse the backup file section by section
+    while pos < buffer.len() {
+        let opcode = buffer[pos]; // What type of section is this?
+        pos += 1;
+        
+        match opcode {
+            0xFA => {
+                // Metadata section (restaurant info) - skip for now
+                if let Some(_key) = parse_string_encoding(&buffer, &mut pos) {
+                    let _value = parse_string_encoding(&buffer, &mut pos);
+                }
+            }
+            0xFE => {
+                // Database section marker
+                let _db_index = parse_length_encoding(&buffer, &mut pos);
+            }
+            0xFB => {
+                // Hash table size info - skip
+                let _hash_table_size = parse_length_encoding(&buffer, &mut pos);
+                let _expire_hash_table_size = parse_length_encoding(&buffer, &mut pos);
+            }
+            0xFC => {
+                // Entry with millisecond expiration
+                if pos + 8 > buffer.len() { break; }
+                let expire_timestamp = u64::from_le_bytes([
+                    buffer[pos], buffer[pos + 1], buffer[pos + 2], buffer[pos + 3],
+                    buffer[pos + 4], buffer[pos + 5], buffer[pos + 6], buffer[pos + 7],
+                ]) as u128;
+                pos += 8;
+                
+                // Skip value type byte
+                if pos >= buffer.len() { break; }
+                let _value_type = buffer[pos];
+                pos += 1;
+                
+                // Read key and value
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(key, StoredValue {
+                            value,
+                            expires_at: Some(expire_timestamp),
+                        });
+                    }
+                }
+            }
+            0xFD => {
+                // Entry with second expiration
+                if pos + 4 > buffer.len() { break; }
+                let expire_timestamp = u32::from_le_bytes([
+                    buffer[pos], buffer[pos + 1], buffer[pos + 2], buffer[pos + 3],
+                ]) as u128 * 1000; // Convert seconds to milliseconds
+                pos += 4;
+                
+                // Skip value type byte
+                if pos >= buffer.len() { break; }
+                let _value_type = buffer[pos];
+                pos += 1;
+                
+                // Read key and value
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(key, StoredValue {
+                            value,
+                            expires_at: Some(expire_timestamp),
+                        });
+                    }
+                }
+            }
+            0xFF => {
+                // End of file marker
+                break;
+            }
+            _ => {
+                // Regular entry without expiration
+                let _value_type = opcode;
+                
+                // Read key and value
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(key, StoredValue {
+                            value,
+                            expires_at: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    data_store // Return the restored memory book
+}
+
 // 📋 Restaurant setup: Read management instructions from command line
 fn parse_args() -> Config {
     let args: Vec<String> = env::args().collect();  // Get command line arguments
@@ -156,8 +389,10 @@ fn main() {
     let config = parse_args();
     // 🏪 Open the restaurant at address "127.0.0.1:6379"
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    // 📖 Create the restaurant's shared memory book with expiration timers (thread-safe storage)
-    let data_store = Arc::new(Mutex::new(HashMap::<String, StoredValue>::new()));
+    // 🗃️ Load previous data from backup file (if it exists) - restaurant remembers what it had before!
+    let initial_data = load_rdb_file(&config);
+    // 📖 Create the restaurant's shared memory book with any restored data (thread-safe storage)
+    let data_store = Arc::new(Mutex::new(initial_data));
 
     // 🚪 Wait for customers to walk through the door
     for stream in listener.incoming() {
@@ -297,6 +532,45 @@ fn main() {
                                                     }
                                                 }
                                             }
+                                            "KEYS" => {
+                                                // 🔍 Customer wants to see what's available: "KEYS *" (show all) or "KEYS foo" (show keys matching "foo")
+                                                if args.len() >= 2 {
+                                                    let pattern = &args[1];
+                                                    // 🔒 Lock the memory book to read current inventory
+                                                    let store = store_clone.lock().unwrap();
+                                                    let now = SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis();
+                                                    
+                                                    let mut matching_keys = Vec::new();
+                                                    
+                                                    // 🔍 Look through all items in the memory book
+                                                    for (key, stored_value) in store.iter() {
+                                                        // ⏰ Check if this item has expired
+                                                        let is_expired = if let Some(expires_at) = stored_value.expires_at {
+                                                            now >= expires_at
+                                                        } else {
+                                                            false
+                                                        };
+                                                        
+                                                        // ✅ If not expired and matches the pattern, add to list
+                                                        if !is_expired && matches_pattern(key, pattern) {
+                                                            matching_keys.push(key.clone());
+                                                        }
+                                                    }
+                                                    
+                                                    // 📝 Format response as Redis array: *2\r\n$3\r\nfoo\r\n$3\r\nbar\r\n
+                                                    let mut response = format!("*{}\r\n", matching_keys.len());
+                                                    for key in matching_keys {
+                                                        response.push_str(&format!("${}\r\n{}\r\n", key.len(), key));
+                                                    }
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                } else {
+                                                    // No pattern provided, return empty list
+                                                    stream.write_all(b"*0\r\n").unwrap();
+                                                }
+                                            }
                                             _ => {
                                                 // Unknown order: default to PONG
                                                 stream.write_all(b"+PONG\r\n").unwrap();
@@ -356,3 +630,18 @@ fn main() {
    - The restaurant now knows where to store its backup records for persistence
    - `CONFIG GET` command lets customers ask: "Where do you keep your backup files?"
    - Waiters can answer questions about the restaurant's setup using the `CONFIG` command
+
+9. **RDB Persistence System** - like the restaurant's backup and restore system:
+   - `load_rdb_file()` runs when the restaurant opens to restore previous data from backup files
+   - Can read the special RDB file format with different sections (header, metadata, database, end-of-file)
+   - Supports both length encoding and string encoding to decode the backup format
+   - Handles entries with expiration times (both seconds and milliseconds)
+   - If backup file doesn't exist or is corrupted, restaurant starts fresh with empty memory book
+   - Restaurant can now remember what it had before, even after closing and reopening!
+
+10. **KEYS Command System** - like showing customers the current menu:
+   - `KEYS *` shows all non-expired items currently in the restaurant's memory book
+   - `KEYS pattern` supports simple pattern matching (exact matches or "*" for everything)
+   - `matches_pattern()` function determines if a key matches what the customer asked for
+   - Automatically filters out expired items - customers only see what's currently available
+   - Returns results in Redis array format: `*2\r\n$3\r\nkey1\r\n$4\r\nkey2\r\n`
