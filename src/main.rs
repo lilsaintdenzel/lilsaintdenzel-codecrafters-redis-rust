@@ -1,8 +1,10 @@
 #![allow(unused_imports)]
 use std::collections::HashMap;
 use std::env;
-use std::io::{Read, Write};
+use std::fs::File;
+use std::io::{BufReader, Read, Write};
 use std::net::TcpListener;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,6 +57,268 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     Some(args)
 }
 
+fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+    if *pos >= bytes.len() {
+        return None;
+    }
+    
+    let first_byte = bytes[*pos];
+    *pos += 1;
+    
+    let first_two_bits = (first_byte & 0b11000000) >> 6;
+    
+    match first_two_bits {
+        0b00 => {
+            // Length is the remaining 6 bits
+            Some((first_byte & 0b00111111) as u64)
+        }
+        0b01 => {
+            // Length is next 14 bits (6 + 8)
+            if *pos >= bytes.len() {
+                return None;
+            }
+            let second_byte = bytes[*pos];
+            *pos += 1;
+            let length = (((first_byte & 0b00111111) as u64) << 8) | (second_byte as u64);
+            Some(length)
+        }
+        0b10 => {
+            // Length is next 4 bytes in big-endian
+            if *pos + 4 > bytes.len() {
+                return None;
+            }
+            let mut length = 0u64;
+            for i in 0..4 {
+                length = (length << 8) | (bytes[*pos + i] as u64);
+            }
+            *pos += 4;
+            Some(length)
+        }
+        0b11 => {
+            // Special string encoding - return the remaining 6 bits as a special marker
+            Some(0xFF00 | ((first_byte & 0b00111111) as u64))
+        }
+        _ => None,
+    }
+}
+
+fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
+    let length_or_type = parse_length_encoding(bytes, pos)?;
+    
+    if length_or_type >= 0xFF00 {
+        // Special string encoding
+        let encoding_type = (length_or_type & 0xFF) as u8;
+        match encoding_type {
+            0x00 => {
+                // 8-bit integer
+                if *pos >= bytes.len() {
+                    return None;
+                }
+                let val = bytes[*pos] as i8;
+                *pos += 1;
+                Some(val.to_string())
+            }
+            0x01 => {
+                // 16-bit integer (little-endian)
+                if *pos + 2 > bytes.len() {
+                    return None;
+                }
+                let val = u16::from_le_bytes([bytes[*pos], bytes[*pos + 1]]) as i16;
+                *pos += 2;
+                Some(val.to_string())
+            }
+            0x02 => {
+                // 32-bit integer (little-endian)
+                if *pos + 4 > bytes.len() {
+                    return None;
+                }
+                let val = u32::from_le_bytes([
+                    bytes[*pos],
+                    bytes[*pos + 1],
+                    bytes[*pos + 2],
+                    bytes[*pos + 3],
+                ]) as i32;
+                *pos += 4;
+                Some(val.to_string())
+            }
+            _ => None,
+        }
+    } else {
+        // Regular string
+        let len = length_or_type as usize;
+        if *pos + len > bytes.len() {
+            return None;
+        }
+        let string_bytes = &bytes[*pos..*pos + len];
+        *pos += len;
+        String::from_utf8(string_bytes.to_vec()).ok()
+    }
+}
+
+fn matches_pattern(key: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true;
+    }
+    
+    // Simple glob pattern matching
+    // For now, only support "*" (match all) and exact matches
+    if pattern.contains('*') {
+        if pattern == "*" {
+            return true;
+        }
+        // More complex pattern matching would go here
+        // For this stage, we mainly need to support "*"
+        true
+    } else {
+        key == pattern
+    }
+}
+
+fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
+    let mut data_store = HashMap::new();
+    let rdb_path = Path::new(&config.dir).join(&config.dbfilename);
+    
+    if !rdb_path.exists() {
+        return data_store;
+    }
+    
+    let file = match File::open(&rdb_path) {
+        Ok(f) => f,
+        Err(_) => return data_store,
+    };
+    
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    if reader.read_to_end(&mut buffer).is_err() {
+        return data_store;
+    }
+    
+    let mut pos = 0;
+    
+    // Parse header ("REDIS0011")
+    if buffer.len() < 9 || &buffer[0..5] != b"REDIS" {
+        return data_store;
+    }
+    pos = 9;
+    
+    while pos < buffer.len() {
+        let opcode = buffer[pos];
+        pos += 1;
+        
+        match opcode {
+            0xFA => {
+                // Metadata section - skip
+                if let Some(_key) = parse_string_encoding(&buffer, &mut pos) {
+                    let _value = parse_string_encoding(&buffer, &mut pos);
+                }
+            }
+            0xFE => {
+                // Database section
+                let _db_index = parse_length_encoding(&buffer, &mut pos);
+            }
+            0xFB => {
+                // Hash table size info - skip
+                let _hash_table_size = parse_length_encoding(&buffer, &mut pos);
+                let _expire_hash_table_size = parse_length_encoding(&buffer, &mut pos);
+            }
+            0xFC => {
+                // Key with millisecond expiry
+                if pos + 8 > buffer.len() {
+                    break;
+                }
+                let expire_timestamp = u64::from_le_bytes([
+                    buffer[pos],
+                    buffer[pos + 1],
+                    buffer[pos + 2],
+                    buffer[pos + 3],
+                    buffer[pos + 4],
+                    buffer[pos + 5],
+                    buffer[pos + 6],
+                    buffer[pos + 7],
+                ]) as u128;
+                pos += 8;
+                
+                // Value type (should be 0 for string)
+                if pos >= buffer.len() {
+                    break;
+                }
+                let _value_type = buffer[pos];
+                pos += 1;
+                
+                // Key and value
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(
+                            key,
+                            StoredValue {
+                                value,
+                                expires_at: Some(expire_timestamp),
+                            },
+                        );
+                    }
+                }
+            }
+            0xFD => {
+                // Key with second expiry
+                if pos + 4 > buffer.len() {
+                    break;
+                }
+                let expire_timestamp = u32::from_le_bytes([
+                    buffer[pos],
+                    buffer[pos + 1],
+                    buffer[pos + 2],
+                    buffer[pos + 3],
+                ]) as u128
+                    * 1000; // Convert to milliseconds
+                pos += 4;
+                
+                // Value type (should be 0 for string)
+                if pos >= buffer.len() {
+                    break;
+                }
+                let _value_type = buffer[pos];
+                pos += 1;
+                
+                // Key and value
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(
+                            key,
+                            StoredValue {
+                                value,
+                                expires_at: Some(expire_timestamp),
+                            },
+                        );
+                    }
+                }
+            }
+            0xFF => {
+                // End of file
+                break;
+            }
+            _ => {
+                // Regular key-value pair (value type)
+                let _value_type = opcode;
+                
+                // Key and value
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(
+                            key,
+                            StoredValue {
+                                value,
+                                expires_at: None,
+                            },
+                        );
+                    }
+                }
+            }
+        }
+    }
+    
+    data_store
+}
+
 fn parse_args() -> Config {
     let args: Vec<String> = env::args().collect();
     let mut dir = "/tmp/redis-data".to_string();
@@ -91,7 +355,8 @@ fn parse_args() -> Config {
 fn main() {
     let config = parse_args();
     let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
-    let data_store = Arc::new(Mutex::new(HashMap::<String, StoredValue>::new()));
+    let initial_data = load_rdb_file(&config);
+    let data_store = Arc::new(Mutex::new(initial_data));
 
     for stream in listener.incoming() {
         match stream {
@@ -202,6 +467,39 @@ fn main() {
                                                             stream.write_all(b"*0\r\n").unwrap();
                                                         }
                                                     }
+                                                }
+                                            }
+                                            "KEYS" => {
+                                                if args.len() >= 2 {
+                                                    let pattern = &args[1];
+                                                    let store = store_clone.lock().unwrap();
+                                                    let now = SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis();
+                                                    
+                                                    let mut matching_keys = Vec::new();
+                                                    
+                                                    for (key, stored_value) in store.iter() {
+                                                        // Check if key has expired
+                                                        let is_expired = if let Some(expires_at) = stored_value.expires_at {
+                                                            now >= expires_at
+                                                        } else {
+                                                            false
+                                                        };
+                                                        
+                                                        if !is_expired && matches_pattern(key, pattern) {
+                                                            matching_keys.push(key.clone());
+                                                        }
+                                                    }
+                                                    
+                                                    let mut response = format!("*{}\r\n", matching_keys.len());
+                                                    for key in matching_keys {
+                                                        response.push_str(&format!("${}\r\n{}\r\n", key.len(), key));
+                                                    }
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                } else {
+                                                    stream.write_all(b"*0\r\n").unwrap();
                                                 }
                                             }
                                             _ => {
