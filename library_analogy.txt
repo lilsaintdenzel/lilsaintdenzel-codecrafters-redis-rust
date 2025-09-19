@@ -1,0 +1,676 @@
+Redis Server Code Explanation - Digital Library Analogy
+
+This Redis server code works like a smart digital library system:
+
+**The Library Building (Server)**
+- Opens at "127.0.0.1:6379" by default (like a library address)
+- **NEW**: Can now open branch locations with `--port` flag for multiple library branches!
+- Welcomes visitors (clients) through the front door
+
+**When Visitors Arrive**
+- Each visitor gets their own librarian (thread) 
+- The librarian stays with that visitor throughout their entire visit
+- Multiple visitors can be helped simultaneously by different librarians
+
+**How Librarians Understand Requests (Redis Protocol Parser)**
+The librarians are specially trained to understand the library's cataloging system! They can decode structured requests:
+- Visitors don't just say "PING" - they use the library's format: `*2\r\n$4\r\nECHO\r\n$3\r\nhey\r\n`
+- The librarian (parser) interprets this:
+  - `*2` = "This request has 2 parts"
+  - `$4\r\nECHO` = "First part is 4 letters: ECHO"
+  - `$3\r\nhey` = "Second part is 3 letters: hey"
+- So the librarian understands: "Visitor wants ECHO service with parameter 'hey'"
+
+**What Each Librarian Does Now**
+1. Listens to what the visitor needs (reads data)
+2. **NEW**: Decodes the library's cataloging format (Redis protocol)
+3. **NEW**: Processes different types of requests:
+   - If they say "PING" → responds "PONG" (simple confirmation: `+PONG\r\n`)
+   - If they say "ECHO [something]" → repeats back exactly what they said (formatted response: `$3\r\nhey\r\n`)
+   - **If they say "SET [title] [content]" → stores it in the library's catalog and confirms "OK"**
+   - **If they say "SET [title] [content] px [time]" → stores it as a temporary exhibit that expires after the specified time!**
+   - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
+   - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
+   - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
+   - If they say something else → defaults to "PONG"
+4. Continues helping until the visitor leaves
+5. If something goes wrong, the librarian stops serving that visitor
+
+**Key Benefits**
+- Multiple visitors can be served simultaneously (concurrent connections)
+- One slow visitor doesn't delay others
+- Each interaction is independent
+- **NEW**: Librarians can understand different types of requests!
+- **NEW**: Responses are properly formatted in the library's cataloging system
+- **NEW**: The library has a shared catalog that all librarians can access safely
+- **NEW**: Visitors can store and retrieve information (SET/GET operations)
+- **NEW**: The library can handle temporary exhibits that automatically expire!
+- **NEW**: The library can remember its collection even after closing by reading from archive files when it reopens (RDB persistence)
+- **NEW**: Visitors can browse what's currently available using the KEYS command
+- **NEW**: The library can open multiple branch locations on different addresses (port configuration for distributed libraries)
+
+The library is now much more sophisticated - it can handle different services, manage temporary collections with expiration times, support multiple branches, and respond appropriately to all visitor needs!
+
+==== CODE WITH LIBRARY COMMENTS ====
+
+```rust
+// Library imports - tools we need
+use std::collections::HashMap;  // The library's catalog system
+use std::env;                   // For reading administrative instructions (command line args)
+use std::fs::File;              // For reading archive files
+use std::io::{BufReader, Read, Write}; // For communicating with visitors and reading files
+use std::net::TcpListener;      // The library building
+use std::path::Path;            // For working with file paths
+use std::sync::{Arc, Mutex};    // Safe way to share the catalog between librarians
+use std::thread;                // Librarians
+use std::time::{SystemTime, UNIX_EPOCH};  // Library's clock for exhibition timers
+
+// 📚 Special catalog entry with expiration timer
+#[derive(Clone)]
+struct StoredValue {
+    value: String,              // The content/book
+    expires_at: Option<u128>,   // When this exhibit expires (library's clock time)
+}
+
+// 🏛️ Library configuration - where to keep archives and which address to use
+#[derive(Clone)]
+struct Config {
+    dir: String,                // Directory where archive files are stored
+    dbfilename: String,         // Name of the archive file
+    port: u16,                  // Which address to open the library at
+}
+
+// 🧠 Special librarian training: How to understand visitor requests
+fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
+    let data = String::from_utf8_lossy(&buffer[..n]);
+    let lines: Vec<&str> = data.split("\r\n").collect();
+    
+    // Check if it's a proper request format (*number means "request has X parts")
+    if lines.is_empty() || !lines[0].starts_with('*') {
+        return None;  // Can't understand this request
+    }
+    
+    let array_len: usize = lines[0][1..].parse().ok()?;  // How many parts?
+    let mut args = Vec::new();  // Collect request parts here
+    let mut line_idx = 1;
+    
+    // Parse each part of the request
+    for _ in 0..array_len {
+        // Each part starts with $ and length ($4 means "next part is 4 letters")
+        if line_idx >= lines.len() || !lines[line_idx].starts_with('$') {
+            return None;  // Malformed request
+        }
+        
+        let str_len: usize = lines[line_idx][1..].parse().ok()?;
+        line_idx += 1;
+        
+        // Get the actual word
+        if line_idx >= lines.len() {
+            return None;
+        }
+        
+        let arg = lines[line_idx].to_string();
+        if arg.len() != str_len {
+            return None;  // Length doesn't match
+        }
+        
+        args.push(arg);  // Add this word to the request
+        line_idx += 1;
+    }
+    
+    Some(args)  // Return the understood request
+}
+
+// 🔍 Special archive decoder: How to read library archive files (RDB format)
+fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
+    // This is like reading the library's special archival system where each entry
+    // starts with a code that tells you how long the next piece of information is
+    if *pos >= bytes.len() {
+        return None;
+    }
+    
+    let first_byte = bytes[*pos];
+    *pos += 1;
+    
+    let first_two_bits = (first_byte & 0b11000000) >> 6;
+    
+    match first_two_bits {
+        0b00 => {
+            // Small number: the remaining 6 bits tell us the length
+            Some((first_byte & 0b00111111) as u64)
+        }
+        0b01 => {
+            // Medium number: combine this byte + next byte for length
+            if *pos >= bytes.len() { return None; }
+            let second_byte = bytes[*pos];
+            *pos += 1;
+            let length = (((first_byte & 0b00111111) as u64) << 8) | (second_byte as u64);
+            Some(length)
+        }
+        0b10 => {
+            // Large number: next 4 bytes tell us the length
+            if *pos + 4 > bytes.len() { return None; }
+            let mut length = 0u64;
+            for i in 0..4 {
+                length = (length << 8) | (bytes[*pos + i] as u64);
+            }
+            *pos += 4;
+            Some(length)
+        }
+        0b11 => {
+            // Special encoding marker - like "this entry is stored in a special way"
+            Some(0xFF00 | ((first_byte & 0b00111111) as u64))
+        }
+        _ => None,
+    }
+}
+
+// 📖 Text decoder: How to read content from the archive files
+fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
+    let length_or_type = parse_length_encoding(bytes, pos)?;
+    
+    if length_or_type >= 0xFF00 {
+        // Special encoding - numbers stored as binary instead of text
+        let encoding_type = (length_or_type & 0xFF) as u8;
+        match encoding_type {
+            0x00 => {
+                // 8-bit number
+                if *pos >= bytes.len() { return None; }
+                let val = bytes[*pos] as i8;
+                *pos += 1;
+                Some(val.to_string())
+            }
+            0x01 => {
+                // 16-bit number (little-endian)
+                if *pos + 2 > bytes.len() { return None; }
+                let val = u16::from_le_bytes([bytes[*pos], bytes[*pos + 1]]) as i16;
+                *pos += 2;
+                Some(val.to_string())
+            }
+            0x02 => {
+                // 32-bit number (little-endian)
+                if *pos + 4 > bytes.len() { return None; }
+                let val = u32::from_le_bytes([
+                    bytes[*pos], bytes[*pos + 1], bytes[*pos + 2], bytes[*pos + 3],
+                ]) as i32;
+                *pos += 4;
+                Some(val.to_string())
+            }
+            _ => None,
+        }
+    } else {
+        // Regular text: read the specified number of bytes
+        let len = length_or_type as usize;
+        if *pos + len > bytes.len() { return None; }
+        let string_bytes = &bytes[*pos..*pos + len];
+        *pos += len;
+        String::from_utf8(string_bytes.to_vec()).ok()
+    }
+}
+
+// 🔍 Pattern matching helper: Does this title match what the visitor searched for?
+fn matches_pattern(key: &str, pattern: &str) -> bool {
+    if pattern == "*" {
+        return true; // "*" means "show me everything"
+    }
+    
+    // Simple pattern matching
+    if pattern.contains('*') {
+        if pattern == "*" {
+            return true;
+        }
+        // More complex patterns could be added here
+        true
+    } else {
+        key == pattern // Exact match only
+    }
+}
+
+// 🗃️ Library opening: Read the archive file when opening
+fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
+    let mut data_store = HashMap::new();
+    let rdb_path = Path::new(&config.dir).join(&config.dbfilename);
+    
+    // Check if archive file exists (library might be brand new)
+    if !rdb_path.exists() {
+        return data_store; // Empty catalog for new library
+    }
+    
+    // Try to open the archive file
+    let file = match File::open(&rdb_path) {
+        Ok(f) => f,
+        Err(_) => return data_store, // Couldn't read file, start fresh
+    };
+    
+    // Read the entire file
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    if reader.read_to_end(&mut buffer).is_err() {
+        return data_store; // File corrupted, start fresh
+    }
+    
+    let mut pos = 0;
+    
+    // Check file header - should start with "REDIS0011"
+    if buffer.len() < 9 || &buffer[0..5] != b"REDIS" {
+        return data_store; // Not a valid archive file
+    }
+    pos = 9; // Skip header
+    
+    // Parse the archive file section by section
+    while pos < buffer.len() {
+        let opcode = buffer[pos]; // What type of section is this?
+        pos += 1;
+        
+        match opcode {
+            0xFA => {
+                // Metadata section (library info) - skip for now
+                if let Some(_key) = parse_string_encoding(&buffer, &mut pos) {
+                    let _value = parse_string_encoding(&buffer, &mut pos);
+                }
+            }
+            0xFE => {
+                // Database section marker
+                let _db_index = parse_length_encoding(&buffer, &mut pos);
+            }
+            0xFB => {
+                // Hash table size info - skip
+                let _hash_table_size = parse_length_encoding(&buffer, &mut pos);
+                let _expire_hash_table_size = parse_length_encoding(&buffer, &mut pos);
+            }
+            0xFC => {
+                // Entry with millisecond expiration
+                if pos + 8 > buffer.len() { break; }
+                let expire_timestamp = u64::from_le_bytes([
+                    buffer[pos], buffer[pos + 1], buffer[pos + 2], buffer[pos + 3],
+                    buffer[pos + 4], buffer[pos + 5], buffer[pos + 6], buffer[pos + 7],
+                ]) as u128;
+                pos += 8;
+                
+                // Skip value type byte
+                if pos >= buffer.len() { break; }
+                let _value_type = buffer[pos];
+                pos += 1;
+                
+                // Read title and content
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(key, StoredValue {
+                            value,
+                            expires_at: Some(expire_timestamp),
+                        });
+                    }
+                }
+            }
+            0xFD => {
+                // Entry with second expiration
+                if pos + 4 > buffer.len() { break; }
+                let expire_timestamp = u32::from_le_bytes([
+                    buffer[pos], buffer[pos + 1], buffer[pos + 2], buffer[pos + 3],
+                ]) as u128 * 1000; // Convert seconds to milliseconds
+                pos += 4;
+                
+                // Skip value type byte
+                if pos >= buffer.len() { break; }
+                let _value_type = buffer[pos];
+                pos += 1;
+                
+                // Read title and content
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(key, StoredValue {
+                            value,
+                            expires_at: Some(expire_timestamp),
+                        });
+                    }
+                }
+            }
+            0xFF => {
+                // End of file marker
+                break;
+            }
+            _ => {
+                // Regular entry without expiration
+                let _value_type = opcode;
+                
+                // Read title and content
+                if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
+                    if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
+                        data_store.insert(key, StoredValue {
+                            value,
+                            expires_at: None,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    
+    data_store // Return the restored catalog
+}
+
+// 📋 Library setup: Read administrative instructions from command line
+fn parse_args() -> Config {
+    let args: Vec<String> = env::args().collect();  // Get command line arguments
+    // 📁 Default library setup
+    let mut dir = "/tmp/redis-data".to_string();
+    let mut dbfilename = "dump.rdb".to_string();
+    let mut port = 6379u16;  // Default library address (port 6379)
+    
+    let mut i = 1;
+    while i < args.len() {
+        // 📖 Read administrative instructions
+        match args[i].as_str() {
+            "--dir" => {
+                // "Store archive files in this directory"
+                if i + 1 < args.len() {
+                    dir = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--dbfilename" => {
+                // "Name the archive file this"
+                if i + 1 < args.len() {
+                    dbfilename = args[i + 1].clone();
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            "--port" => {
+                // "Open the library at this address/port"
+                if i + 1 < args.len() {
+                    if let Ok(parsed_port) = args[i + 1].parse::<u16>() {
+                        port = parsed_port;  // Use custom address if valid
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            _ => {
+                i += 1;
+            }
+        }
+    }
+    
+    Config { dir, dbfilename, port }  // Return library configuration with address
+}
+
+fn main() {
+    // 📋 Read administrative instructions and set up library configuration
+    let config = parse_args();
+    // 🏛️ Open the library at the configured address (default 6379, or custom via --port)
+    let bind_address = format!("127.0.0.1:{}", config.port);
+    let listener = TcpListener::bind(&bind_address).unwrap();
+    // 🗃️ Load previous collection from archive file (if it exists) - library remembers its collection!
+    let initial_data = load_rdb_file(&config);
+    // 📚 Create the library's shared catalog with any restored collection (thread-safe storage)
+    let data_store = Arc::new(Mutex::new(initial_data));
+
+    // 🚪 Wait for visitors to enter the library
+    for stream in listener.incoming() {
+        match stream {
+            // ✅ A visitor successfully entered
+            Ok(mut stream) => {
+                // 🔑 Give the librarian access to the catalog
+                let store_clone = Arc::clone(&data_store);
+                // 📋 Give the librarian a copy of the library configuration
+                let config_clone = config.clone();
+                // 👩‍🏫 Assign a dedicated librarian to this visitor
+                thread::spawn(move || {
+                    let mut buffer = [0; 1024];  // Librarian's notepad
+                    
+                    // 🔄 Keep helping this visitor
+                    loop {
+                        // 👂 Listen to what the visitor needs
+                        match stream.read(&mut buffer) {
+                            Ok(0) => break,  // Visitor left
+                            Ok(n) => {
+                                // 🧠 Try to understand what they requested using special training
+                                if let Some(args) = parse_redis_command(&buffer, n) {
+                                    if !args.is_empty() {
+                                        let command = args[0].to_uppercase();  // Commands are case-insensitive
+                                        
+                                        // 📚 Provide service based on what they requested
+                                        match command.as_str() {
+                                            "PING" => {
+                                                // Simple request: just respond "PONG"
+                                                stream.write_all(b"+PONG\r\n").unwrap();
+                                            }
+                                            "ECHO" => {
+                                                // Echo request: repeat back what they said
+                                                if args.len() > 1 {
+                                                    let arg = &args[1];
+                                                    // Format response as: $length\r\nvalue\r\n
+                                                    let response = format!("${}\r\n{}\r\n", arg.len(), arg);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
+                                            "SET" => {
+                                                // 📝 Visitor wants to add something to the collection: "SET title content" or "SET title content px 100"
+                                                if args.len() >= 3 {
+                                                    let key = &args[1];
+                                                    let value = &args[2];
+                                                    
+                                                    let mut expires_at = None;
+                                                    
+                                                    // 🕐 Check if visitor wants expiration timer: "px 100" means "expires in 100 milliseconds"
+                                                    if args.len() >= 5 {
+                                                        let option = args[3].to_uppercase();
+                                                        if option == "PX" {
+                                                            if let Ok(ms) = args[4].parse::<u128>() {
+                                                                // 🕐 Set library's timer: current time + expiration time
+                                                                let now = SystemTime::now()
+                                                                    .duration_since(UNIX_EPOCH)
+                                                                    .unwrap()
+                                                                    .as_millis();
+                                                                expires_at = Some(now + ms);
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    // 🗂️ Create catalog entry with content and optional timer
+                                                    let stored_value = StoredValue {
+                                                        value: value.clone(),
+                                                        expires_at,
+                                                    };
+                                                    
+                                                    // 🔒 Lock the catalog so only this librarian can write
+                                                    let mut store = store_clone.lock().unwrap();
+                                                    // 📖 Add the entry to the catalog
+                                                    store.insert(key.clone(), stored_value);
+                                                    // ✅ Tell visitor "OK, I've cataloged it!"
+                                                    stream.write_all(b"+OK\r\n").unwrap();
+                                                }
+                                            }
+                                            "GET" => {
+                                                // 🔍 Visitor wants to retrieve something: "GET title"
+                                                if args.len() >= 2 {
+                                                    let key = &args[1];
+                                                    // 🔒 Lock the catalog to read/write safely (might need to remove expired items)
+                                                    let mut store = store_clone.lock().unwrap();
+                                                    
+                                                    match store.get(key) {
+                                                        Some(stored_value) => {
+                                                            // 🕐 Check if this exhibit has expired
+                                                            if let Some(expires_at) = stored_value.expires_at {
+                                                                let now = SystemTime::now()
+                                                                    .duration_since(UNIX_EPOCH)
+                                                                    .unwrap()
+                                                                    .as_millis();
+                                                                
+                                                                if now >= expires_at {
+                                                                    // ⏰ Exhibition ended! Remove it and say "not found"
+                                                                    store.remove(key);
+                                                                    stream.write_all(b"$-1\r\n").unwrap();
+                                                                } else {
+                                                                    // 📖 Still available! Provide the content
+                                                                    let response = format!("${}\r\n{}\r\n", stored_value.value.len(), stored_value.value);
+                                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                                }
+                                                            } else {
+                                                                // 📖 No timer, permanent collection - provide the content
+                                                                let response = format!("${}\r\n{}\r\n", stored_value.value.len(), stored_value.value);
+                                                                stream.write_all(response.as_bytes()).unwrap();
+                                                            }
+                                                        }
+                                                        None => {
+                                                            // 🤷 Not found, tell them it doesn't exist
+                                                            stream.write_all(b"$-1\r\n").unwrap();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            "CONFIG" => {
+                                                // 📋 Visitor asking about library configuration: "CONFIG GET dir" or "CONFIG GET dbfilename"
+                                                if args.len() >= 3 && args[1].to_uppercase() == "GET" {
+                                                    let param = &args[2];  // What configuration they want to know
+                                                    match param.to_lowercase().as_str() {
+                                                        "dir" => {
+                                                            // 📁 "Where do you store archive files?"
+                                                            let response = format!("*2\r\n$3\r\ndir\r\n${}\r\n{}\r\n", 
+                                                                config_clone.dir.len(), config_clone.dir);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        "dbfilename" => {
+                                                            // 🗂️ "What's the archive file called?"
+                                                            let response = format!("*2\r\n$10\r\ndbfilename\r\n${}\r\n{}\r\n", 
+                                                                config_clone.dbfilename.len(), config_clone.dbfilename);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        _ => {
+                                                            // 🤷 Don't know that configuration setting
+                                                            stream.write_all(b"*0\r\n").unwrap();
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            "KEYS" => {
+                                                // 🔍 Visitor wants to browse what's available: "KEYS *" (show all) or "KEYS title" (show titles matching "title")
+                                                if args.len() >= 2 {
+                                                    let pattern = &args[1];
+                                                    // 🔒 Lock the catalog to read current collection
+                                                    let store = store_clone.lock().unwrap();
+                                                    let now = SystemTime::now()
+                                                        .duration_since(UNIX_EPOCH)
+                                                        .unwrap()
+                                                        .as_millis();
+                                                    
+                                                    let mut matching_keys = Vec::new();
+                                                    
+                                                    // 🔍 Look through all items in the catalog
+                                                    for (key, stored_value) in store.iter() {
+                                                        // ⏰ Check if this exhibit has expired
+                                                        let is_expired = if let Some(expires_at) = stored_value.expires_at {
+                                                            now >= expires_at
+                                                        } else {
+                                                            false
+                                                        };
+                                                        
+                                                        // ✅ If not expired and matches the pattern, add to list
+                                                        if !is_expired && matches_pattern(key, pattern) {
+                                                            matching_keys.push(key.clone());
+                                                        }
+                                                    }
+                                                    
+                                                    // 📝 Format response as library catalog: *2\r\n$5\r\ntitle1\r\n$5\r\ntitle2\r\n
+                                                    let mut response = format!("*{}\r\n", matching_keys.len());
+                                                    for key in matching_keys {
+                                                        response.push_str(&format!("${}\r\n{}\r\n", key.len(), key));
+                                                    }
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                } else {
+                                                    // No pattern provided, return empty list
+                                                    stream.write_all(b"*0\r\n").unwrap();
+                                                }
+                                            }
+                                            _ => {
+                                                // Unknown request: default to PONG
+                                                stream.write_all(b"+PONG\r\n").unwrap();
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // 🤷 Couldn't understand the request format, default to PONG
+                                    stream.write_all(b"+PONG\r\n").unwrap();
+                                }
+                            }
+                            Err(e) => {
+                                // 😵 Something went wrong with this visitor
+                                println!("error reading from stream: {}", e);
+                                break;  // Stop serving them
+                            }
+                        }
+                    }
+                });  // End of librarian's job
+            }
+            // ❌ Someone tried to enter but couldn't
+            Err(e) => {
+                println!("error: {}", e);
+            }
+        }
+    }  // Keep waiting for more visitors
+}
+```
+
+**Key Insights:**
+1. **Each `thread::spawn` creates a new librarian** who can work independently, so the library can serve many visitors simultaneously instead of one at a time!
+
+2. **The `parse_redis_command` function is like librarian training** - it teaches librarians how to decode the library's structured request format (Redis RESP protocol).
+
+3. **The library now has a proper service system** - different requests (`PING`, `ECHO`, `SET`, `GET`) get different responses, making it much more useful than just saying "PONG" to everything!
+
+4. **Smart fallback system** - if a librarian can't understand a request, they default to the simple "PONG" response rather than failing.
+
+5. **The catalog (`HashMap`) is shared safely** - `Arc<Mutex<>>` ensures multiple librarians can access the same catalog without conflicts:
+   - `Arc` = Multiple librarians can have a "reference" to the same catalog
+   - `Mutex` = Only one librarian can read/write in the catalog at a time (prevents data corruption)
+
+6. **Thread-safe catalog operations**:
+   - `SET`: Librarian locks the catalog, adds the entry, unlocks, confirms "OK"
+   - `SET` with timer: Same as above, but also sets an expiration timer
+   - `GET`: Librarian locks the catalog, checks if expired (removes if so), provides the content (or "not found")
+
+7. **Smart expiration system** - like temporary exhibitions that automatically close:
+   - `StoredValue` struct holds both the content and optional expiration time
+   - When storing: `SET title content px 100` sets a 100ms timer using the library's clock
+   - When retrieving: GET checks the timer first - if expired, removes the item and says "not found"
+   - Timer precision: Uses milliseconds since Unix epoch for accurate timing
+
+8. **Library Configuration System** - like setting up the library's archival system:
+   - `Config` struct stores where the library keeps its archive files
+   - `parse_args()` reads the command line (like administrative instructions): `--dir /tmp/library-archives --dbfilename catalog.rdb`
+   - The library now knows where to store its permanent records for persistence
+   - `CONFIG GET` command lets visitors ask: "Where do you keep your archive files?"
+   - Librarians can answer questions about the library's setup using the `CONFIG` command
+
+9. **RDB Persistence System** - like the library's backup and restore system:
+   - `load_rdb_file()` runs when the library opens to restore previous collection from archive files
+   - Can read the special RDB file format with different sections (header, metadata, database, end-of-file)
+   - Supports both length encoding and string encoding to decode the archive format
+   - Handles entries with expiration times (both seconds and milliseconds)
+   - If archive file doesn't exist or is corrupted, library starts fresh with empty catalog
+   - Library can now remember its collection even after closing and reopening!
+
+10. **KEYS Command System** - like showing visitors the current catalog:
+   - `KEYS *` shows all non-expired items currently in the library's catalog
+   - `KEYS pattern` supports simple pattern matching (exact matches or "*" for everything)
+   - `matches_pattern()` function determines if a title matches what the visitor searched for
+   - Automatically filters out expired exhibits - visitors only see what's currently available
+   - Returns results in library format: `*2\r\n$6\r\ntitle1\r\n$6\r\ntitle2\r\n`
+
+11. **Port Configuration System** - like opening multiple library branches:
+   - `Config` struct now includes `port: u16` field to store the library's address
+   - `parse_args()` reads `--port` flag from command line: `./library --port 6380`
+   - Default port is 6379 (standard Redis port), but can be customized for any valid port number
+   - `bind_address` is dynamically created: `format!("127.0.0.1:{}", config.port)`
+   - This enables running multiple library branches simultaneously for distributed access:
+     - Main library: `./library` (operates on port 6379)
+     - Branch library: `./library --port 6380` (operates on port 6380)
+   - Each library operates independently but can share the same system
+   - Essential for distributed library systems where multiple locations need different addresses
+
+The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, and respond appropriately to all visitor needs!
