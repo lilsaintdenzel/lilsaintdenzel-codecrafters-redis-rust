@@ -19,6 +19,7 @@ struct StoredValue {
 struct Config {
     dir: String,
     dbfilename: String,
+    port: u16,
 }
 
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
@@ -323,6 +324,7 @@ fn parse_args() -> Config {
     let args: Vec<String> = env::args().collect();
     let mut dir = "/tmp/redis-data".to_string();
     let mut dbfilename = "dump.rdb".to_string();
+    let mut port = 6379u16;
     
     let mut i = 1;
     while i < args.len() {
@@ -343,18 +345,29 @@ fn parse_args() -> Config {
                     i += 1;
                 }
             }
+            "--port" => {
+                if i + 1 < args.len() {
+                    if let Ok(parsed_port) = args[i + 1].parse::<u16>() {
+                        port = parsed_port;
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
             _ => {
                 i += 1;
             }
         }
     }
     
-    Config { dir, dbfilename }
+    Config { dir, dbfilename, port }
 }
 
 fn main() {
     let config = parse_args();
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    let bind_address = format!("127.0.0.1:{}", config.port);
+    let listener = TcpListener::bind(&bind_address).unwrap();
     let initial_data = load_rdb_file(&config);
     let data_store = Arc::new(Mutex::new(initial_data));
 
