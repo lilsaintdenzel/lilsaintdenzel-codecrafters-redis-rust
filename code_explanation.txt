@@ -3,7 +3,8 @@ Redis Server Code Explanation - Restaurant Analogy
 This Redis server code works like a smart restaurant:
 
 **The Restaurant (Server)**
-- Opens on "127.0.0.1:6379" (like a restaurant address)
+- Opens on "127.0.0.1:6379" by default (like a restaurant address)
+- **NEW**: Can now open on custom ports with `--port` flag for multiple locations!
 - Waits for customers (clients) to walk in
 
 **When Customers Arrive**
@@ -46,8 +47,9 @@ The waiters now have a special training to understand customer orders! They can 
 - **NEW**: The restaurant can handle time-sensitive storage (like daily specials that expire!)
 - **NEW**: The restaurant can remember things even after closing by reading from backup files when it opens (RDB persistence)
 - **NEW**: Customers can ask to see what's currently available using the KEYS command
+- **NEW**: The restaurant can open multiple locations on different addresses (port configuration for replication)
 
-The restaurant is now much smarter - it can handle different orders, remember things with expiration times, and respond appropriately!
+The restaurant is now much smarter - it can handle different orders, remember things with expiration times, support multiple locations, and respond appropriately!
 
 ==== CODE WITH RESTAURANT COMMENTS ====
 
@@ -70,11 +72,12 @@ struct StoredValue {
     expires_at: Option<u128>,   // When it expires (restaurant's clock time)
 }
 
-// 🏪 Restaurant configuration - where to keep backup files
+// 🏪 Restaurant configuration - where to keep backup files and which address to use
 #[derive(Clone)]
 struct Config {
     dir: String,                // Directory where backup files are stored
     dbfilename: String,         // Name of the backup file
+    port: u16,                  // Which port/address to open the restaurant on
 }
 
 // 🧠 Special waiter training: How to understand customer orders
@@ -349,9 +352,10 @@ fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
 // 📋 Restaurant setup: Read management instructions from command line
 fn parse_args() -> Config {
     let args: Vec<String> = env::args().collect();  // Get command line arguments
-    // 📁 Default filing system setup
+    // 📁 Default restaurant setup
     let mut dir = "/tmp/redis-data".to_string();
     let mut dbfilename = "dump.rdb".to_string();
+    let mut port = 6379u16;  // Default restaurant address (port 6379)
     
     let mut i = 1;
     while i < args.len() {
@@ -375,20 +379,32 @@ fn parse_args() -> Config {
                     i += 1;
                 }
             }
+            "--port" => {
+                // "Open the restaurant at this address/port"
+                if i + 1 < args.len() {
+                    if let Ok(parsed_port) = args[i + 1].parse::<u16>() {
+                        port = parsed_port;  // Use custom address if valid
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
             _ => {
                 i += 1;
             }
         }
     }
     
-    Config { dir, dbfilename }  // Return restaurant configuration
+    Config { dir, dbfilename, port }  // Return restaurant configuration with address
 }
 
 fn main() {
     // 📋 Read management instructions and set up restaurant configuration
     let config = parse_args();
-    // 🏪 Open the restaurant at address "127.0.0.1:6379"
-    let listener = TcpListener::bind("127.0.0.1:6379").unwrap();
+    // 🏪 Open the restaurant at the configured address (default 6379, or custom via --port)
+    let bind_address = format!("127.0.0.1:{}", config.port);
+    let listener = TcpListener::bind(&bind_address).unwrap();
     // 🗃️ Load previous data from backup file (if it exists) - restaurant remembers what it had before!
     let initial_data = load_rdb_file(&config);
     // 📖 Create the restaurant's shared memory book with any restored data (thread-safe storage)
@@ -645,3 +661,14 @@ fn main() {
    - `matches_pattern()` function determines if a key matches what the customer asked for
    - Automatically filters out expired items - customers only see what's currently available
    - Returns results in Redis array format: `*2\r\n$3\r\nkey1\r\n$4\r\nkey2\r\n`
+
+11. **Port Configuration System** - like opening multiple restaurant locations:
+   - `Config` struct now includes `port: u16` field to store the restaurant's address
+   - `parse_args()` reads `--port` flag from command line: `./restaurant --port 6380`
+   - Default port is 6379 (standard Redis port), but can be customized for any valid port number
+   - `bind_address` is dynamically created: `format!("127.0.0.1:{}", config.port)`
+   - This enables running multiple restaurant instances simultaneously for replication:
+     - Main restaurant: `./restaurant` (runs on port 6379)
+     - Branch restaurant: `./restaurant --port 6380` (runs on port 6380)
+   - Each restaurant operates independently but can share the same codebase
+   - Essential for leader-follower replication where multiple Redis servers need different addresses
