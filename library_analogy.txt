@@ -32,6 +32,7 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
    - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
+   - **If they say "INFO replication" → provides information about the library's role and status (reports role:master)**
    - If they say something else → defaults to "PONG"
 4. Continues helping until the visitor leaves
 5. If something goes wrong, the librarian stops serving that visitor
@@ -48,6 +49,7 @@ The librarians are specially trained to understand the library's cataloging syst
 - **NEW**: The library can remember its collection even after closing by reading from archive files when it reopens (RDB persistence)
 - **NEW**: Visitors can browse what's currently available using the KEYS command
 - **NEW**: The library can open multiple branch locations on different addresses (port configuration for distributed libraries)
+- **NEW**: Visitors can ask about the library's role and status using the INFO command (reports role:master for main library)
 
 The library is now much more sophisticated - it can handle different services, manage temporary collections with expiration times, support multiple branches, and respond appropriately to all visitor needs!
 
@@ -587,6 +589,15 @@ fn main() {
                                                     stream.write_all(b"*0\r\n").unwrap();
                                                 }
                                             }
+                                            "INFO" => {
+                                                // 📊 Visitor wants to know about the library's status: "INFO replication"
+                                                if args.len() >= 2 && args[1].to_lowercase() == "replication" {
+                                                    // 🏛️ Tell them this is the main library (master role)
+                                                    let info_response = "role:master";
+                                                    let response = format!("${}\r\n{}\r\n", info_response.len(), info_response);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
                                             _ => {
                                                 // Unknown request: default to PONG
                                                 stream.write_all(b"+PONG\r\n").unwrap();
@@ -673,4 +684,12 @@ fn main() {
    - Each library operates independently but can share the same system
    - Essential for distributed library systems where multiple locations need different addresses
 
-The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, and respond appropriately to all visitor needs!
+12. **INFO Command System** - like the library's information desk:
+   - `INFO replication` provides status information about the library's role in a distributed system
+   - Currently reports `role:master` indicating this is the main library branch
+   - Response is formatted as a bulk string: `$11\r\nrole:master\r\n`
+   - Essential for library coordination - other systems can ask "What kind of library are you?"
+   - Prepares for future distributed library features where branches need to know each other's roles
+   - Like asking the information desk: "Is this the main library or a branch?"
+
+The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, provide status information, and respond appropriately to all visitor needs!

@@ -32,6 +32,7 @@ The waiters now have a special training to understand customer orders! They can 
    - **If they say "GET [key]" → looks up the key in the memory book and tells them the value (or "expired" if the timer ran out)**
    - **If they say "CONFIG GET [setting]" → tells them about the restaurant's configuration (like where backup files are stored)**
    - **If they say "KEYS [pattern]" → shows them all the keys currently stored in the restaurant's memory book (that aren't expired)**
+   - **If they say "INFO replication" → tells them about the restaurant's role and status (reports role:master)**
    - If they say something else → defaults to "PONG"
 4. Keeps doing this until the customer leaves
 5. If something goes wrong, the waiter stops serving that customer
@@ -48,6 +49,7 @@ The waiters now have a special training to understand customer orders! They can 
 - **NEW**: The restaurant can remember things even after closing by reading from backup files when it opens (RDB persistence)
 - **NEW**: Customers can ask to see what's currently available using the KEYS command
 - **NEW**: The restaurant can open multiple locations on different addresses (port configuration for replication)
+- **NEW**: Customers can ask about the restaurant's role and status using the INFO command (reports role:master for main restaurant)
 
 The restaurant is now much smarter - it can handle different orders, remember things with expiration times, support multiple locations, and respond appropriately!
 
@@ -587,6 +589,15 @@ fn main() {
                                                     stream.write_all(b"*0\r\n").unwrap();
                                                 }
                                             }
+                                            "INFO" => {
+                                                // 📊 Customer wants to know about the restaurant's status: "INFO replication"
+                                                if args.len() >= 2 && args[1].to_lowercase() == "replication" {
+                                                    // 🏪 Tell them this is the main restaurant (master role)
+                                                    let info_response = "role:master";
+                                                    let response = format!("${}\r\n{}\r\n", info_response.len(), info_response);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
                                             _ => {
                                                 // Unknown order: default to PONG
                                                 stream.write_all(b"+PONG\r\n").unwrap();
@@ -672,3 +683,11 @@ fn main() {
      - Branch restaurant: `./restaurant --port 6380` (runs on port 6380)
    - Each restaurant operates independently but can share the same codebase
    - Essential for leader-follower replication where multiple Redis servers need different addresses
+
+12. **INFO Command System** - like the restaurant's information desk:
+   - `INFO replication` provides status information about the restaurant's role in a distributed system
+   - Currently reports `role:master` indicating this is the main restaurant location
+   - Response is formatted as a bulk string: `$11\r\nrole:master\r\n`
+   - Essential for restaurant coordination - other systems can ask "What type of restaurant are you?"
+   - Prepares for future distributed restaurant features where locations need to know each other's roles
+   - Like asking the host: "Is this the main restaurant or a franchise location?"
