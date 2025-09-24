@@ -400,7 +400,6 @@ fn main() {
                                                 if args.len() >= 3 {
                                                     let key = &args[1];
                                                     let value = &args[2];
-                                                    
                                                     let mut expires_at = None;
                                                     
                                                     // Check for expiration options (PX milliseconds)
@@ -513,6 +512,13 @@ fn main() {
                                                     stream.write_all(response.as_bytes()).unwrap();
                                                 } else {
                                                     stream.write_all(b"*0\r\n").unwrap();
+                                                }
+                                            }
+                                            "INFO" => {
+                                                if args.len() >= 2 && args[1].to_lowercase() == "replication" {
+                                                    let info_response = "role:master";
+                                                    let response = format!("${}\r\n{}\r\n", info_response.len(), info_response);
+                                                    stream.write_all(response.as_bytes()).unwrap();
                                                 }
                                             }
                                             _ => {
