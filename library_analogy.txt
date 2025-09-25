@@ -5,6 +5,7 @@ This Redis server code works like a smart digital library system:
 **The Library Building (Server)**
 - Opens at "127.0.0.1:6379" by default (like a library address)
 - **NEW**: Can now open branch locations with `--port` flag for multiple library branches!
+- **NEW**: Can operate as a replica library with `--replicaof` flag, connecting to a master library!
 - Welcomes visitors (clients) through the front door
 
 **When Visitors Arrive**
@@ -32,7 +33,7 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
    - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
-   - **If they say "INFO replication" → provides information about the library's role and status (reports role:master)**
+   - **If they say "INFO replication" → provides information about the library's role and status (reports role:master for main library, role:slave for replica library)**
    - If they say something else → defaults to "PONG"
 4. Continues helping until the visitor leaves
 5. If something goes wrong, the librarian stops serving that visitor
@@ -49,7 +50,8 @@ The librarians are specially trained to understand the library's cataloging syst
 - **NEW**: The library can remember its collection even after closing by reading from archive files when it reopens (RDB persistence)
 - **NEW**: Visitors can browse what's currently available using the KEYS command
 - **NEW**: The library can open multiple branch locations on different addresses (port configuration for distributed libraries)
-- **NEW**: Visitors can ask about the library's role and status using the INFO command (reports role:master for main library)
+- **NEW**: The library can operate as a replica, connecting to a master library for coordination (--replicaof flag)
+- **NEW**: Visitors can ask about the library's role and status using the INFO command (reports role:master for main library, role:slave for replica)
 
 The library is now much more sophisticated - it can handle different services, manage temporary collections with expiration times, support multiple branches, and respond appropriately to all visitor needs!
 
@@ -80,6 +82,7 @@ struct Config {
     dir: String,                // Directory where archive files are stored
     dbfilename: String,         // Name of the archive file
     port: u16,                  // Which address to open the library at
+    replicaof: Option<(String, u16)>, // If this is a replica, connect to this master (host, port)
 }
 
 // 🧠 Special librarian training: How to understand visitor requests
@@ -358,6 +361,7 @@ fn parse_args() -> Config {
     let mut dir = "/tmp/redis-data".to_string();
     let mut dbfilename = "dump.rdb".to_string();
     let mut port = 6379u16;  // Default library address (port 6379)
+    let mut replicaof = None; // Default: main library (not a replica)
     
     let mut i = 1;
     while i < args.len() {
@@ -392,13 +396,28 @@ fn parse_args() -> Config {
                     i += 1;
                 }
             }
+            "--replicaof" => {
+                // "Operate as a replica library, connecting to this master library"
+                if i + 1 < args.len() {
+                    let master_info = &args[i + 1];
+                    let parts: Vec<&str> = master_info.split_whitespace().collect();
+                    if parts.len() == 2 {
+                        if let Ok(master_port) = parts[1].parse::<u16>() {
+                            replicaof = Some((parts[0].to_string(), master_port));
+                        }
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
             _ => {
                 i += 1;
             }
         }
     }
     
-    Config { dir, dbfilename, port }  // Return library configuration with address
+    Config { dir, dbfilename, port, replicaof }  // Return library configuration with address and master info
 }
 
 fn main() {
@@ -592,8 +611,13 @@ fn main() {
                                             "INFO" => {
                                                 // 📊 Visitor wants to know about the library's status: "INFO replication"
                                                 if args.len() >= 2 && args[1].to_lowercase() == "replication" {
-                                                    // 🏛️ Tell them this is the main library (master role)
-                                                    let info_response = "role:master";
+                                                    // 🏛️ Tell them what kind of library this is
+                                                    let role = if config_clone.replicaof.is_some() {
+                                                        "slave"  // This is a replica library
+                                                    } else {
+                                                        "master"  // This is the main library
+                                                    };
+                                                    let info_response = format!("role:{}", role);
                                                     let response = format!("${}\r\n{}\r\n", info_response.len(), info_response);
                                                     stream.write_all(response.as_bytes()).unwrap();
                                                 }
@@ -686,10 +710,19 @@ fn main() {
 
 12. **INFO Command System** - like the library's information desk:
    - `INFO replication` provides status information about the library's role in a distributed system
-   - Currently reports `role:master` indicating this is the main library branch
-   - Response is formatted as a bulk string: `$11\r\nrole:master\r\n`
+   - Reports `role:master` for main library or `role:slave` for replica library
+   - Response is formatted as a bulk string: `$11\r\nrole:master\r\n` or `$10\r\nrole:slave\r\n`
    - Essential for library coordination - other systems can ask "What kind of library are you?"
-   - Prepares for future distributed library features where branches need to know each other's roles
-   - Like asking the information desk: "Is this the main library or a branch?"
+   - Works with the `--replicaof` configuration to determine role dynamically
+   - Like asking the information desk: "Is this the main library or a replica branch?"
+
+13. **Replica Configuration System** - like setting up a branch library:
+   - `--replicaof "host port"` flag configures this library as a replica of another library
+   - Example: `./library --port 6380 --replicaof "localhost 6379"` creates a replica on port 6380
+   - `Config.replicaof` field stores master library information: `Some(("localhost", 6379))`
+   - `parse_args()` parses the master info format: splits "localhost 6379" into host and port
+   - INFO command automatically detects replica mode and reports `role:slave`
+   - Prepares foundation for future replication features where replica syncs with master
+   - Like opening a branch library that reports to the main headquarters
 
 The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, provide status information, and respond appropriately to all visitor needs!

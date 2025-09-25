@@ -20,6 +20,7 @@ struct Config {
     dir: String,
     dbfilename: String,
     port: u16,
+    replicaof: Option<(String, u16)>, // (host, port) if this is a replica
 }
 
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
@@ -325,6 +326,7 @@ fn parse_args() -> Config {
     let mut dir = "/tmp/redis-data".to_string();
     let mut dbfilename = "dump.rdb".to_string();
     let mut port = 6379u16;
+    let mut replicaof = None;
     
     let mut i = 1;
     while i < args.len() {
@@ -355,13 +357,27 @@ fn parse_args() -> Config {
                     i += 1;
                 }
             }
+            "--replicaof" => {
+                if i + 1 < args.len() {
+                    let master_info = &args[i + 1];
+                    let parts: Vec<&str> = master_info.split_whitespace().collect();
+                    if parts.len() == 2 {
+                        if let Ok(master_port) = parts[1].parse::<u16>() {
+                            replicaof = Some((parts[0].to_string(), master_port));
+                        }
+                    }
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
             _ => {
                 i += 1;
             }
         }
     }
     
-    Config { dir, dbfilename, port }
+    Config { dir, dbfilename, port, replicaof }
 }
 
 fn main() {
@@ -516,7 +532,12 @@ fn main() {
                                             }
                                             "INFO" => {
                                                 if args.len() >= 2 && args[1].to_lowercase() == "replication" {
-                                                    let info_response = "role:master";
+                                                    let role = if config_clone.replicaof.is_some() {
+                                                        "slave"
+                                                    } else {
+                                                        "master"
+                                                    };
+                                                    let info_response = format!("role:{}", role);
                                                     let response = format!("${}\r\n{}\r\n", info_response.len(), info_response);
                                                     stream.write_all(response.as_bytes()).unwrap();
                                                 }
