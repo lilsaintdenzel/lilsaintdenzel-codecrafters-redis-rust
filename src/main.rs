@@ -537,7 +537,14 @@ fn main() {
                                                     } else {
                                                         "master"
                                                     };
-                                                    let info_response = format!("role:{}", role);
+                                                    let mut info_lines = vec![format!("role:{}", role)];
+                                                    
+                                                    if config_clone.replicaof.is_none() {
+                                                        info_lines.push("master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string());
+                                                        info_lines.push("master_repl_offset:0".to_string());
+                                                    }
+                                                    
+                                                    let info_response = info_lines.join("\r\n");
                                                     let response = format!("${}\r\n{}\r\n", info_response.len(), info_response);
                                                     stream.write_all(response.as_bytes()).unwrap();
                                                 }
