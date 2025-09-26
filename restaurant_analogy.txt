@@ -1,79 +1,79 @@
-Redis Server Implementation - Technical Code Explanation
+Redis Server Implementation - Restaurant Analogy Explanation
 
-This Redis server is implemented in Rust and supports core Redis functionality including replication with master identification and offset tracking.
+This Redis server works like a smart restaurant system that can handle multiple customers simultaneously and remember their orders even after closing!
 
-=== COMPLETE CODE WITH DETAILED COMMENTS ===
+=== COMPLETE CODE WITH RESTAURANT ANALOGIES ===
 
 ```rust
 #![allow(unused_imports)]
-use std::collections::HashMap;  // Key-value storage for data
-use std::env;                   // Command line argument parsing
-use std::fs::File;              // File I/O for RDB persistence
-use std::io::{BufReader, Read, Write}; // Stream I/O operations
-use std::net::TcpListener;      // TCP server functionality
-use std::path::Path;            // File path operations
-use std::sync::{Arc, Mutex};    // Thread-safe shared state
-use std::thread;                // Multi-threading support
-use std::time::{SystemTime, UNIX_EPOCH}; // Time operations for TTL
+use std::collections::HashMap;  // The restaurant's order book
+use std::env;                   // Reading the restaurant's opening instructions
+use std::fs::File;              // Reading the restaurant's recipe book from storage
+use std::io::{BufReader, Read, Write}; // Taking orders and serving customers
+use std::net::TcpListener;      // The restaurant's front door
+use std::path::Path;            // Finding where recipe books are stored
+use std::sync::{Arc, Mutex};    // Safe way to share the order book between waiters
+use std::thread;                // Restaurant waiters (each customer gets their own waiter)
+use std::time::{SystemTime, UNIX_EPOCH}; // Restaurant's clock for timing special orders
 
-// Data structure for stored values with optional expiration
+// A dish order with an optional expiration time (like daily specials)
 #[derive(Clone)]
 struct StoredValue {
-    value: String,              // The actual stored data
-    expires_at: Option<u128>,   // Optional expiration timestamp (milliseconds since epoch)
+    value: String,              // The dish/order details
+    expires_at: Option<u128>,   // When this special offer expires (restaurant time)
 }
 
-// Server configuration structure
+// Restaurant configuration - where to store recipes and which location to operate
 #[derive(Clone)]
 struct Config {
-    dir: String,                // Directory for RDB files
-    dbfilename: String,         // RDB filename
-    port: u16,                  // Server port
-    replicaof: Option<(String, u16)>, // Master server info for replication (host, port)
+    dir: String,                // Kitchen storage directory for recipe books
+    dbfilename: String,         // Recipe book filename
+    port: u16,                  // Restaurant location/address
+    replicaof: Option<(String, u16)>, // If this is a franchise, connect to headquarters (host, port)
 }
 
-// Redis RESP protocol parser - converts incoming bytes to command arguments
+// Waiter training: How to understand customer requests in restaurant lingo
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     let data = String::from_utf8_lossy(&buffer[..n]);
     let lines: Vec<&str> = data.split("\r\n").collect();
     
-    // Check for array format: *N indicates N elements follow
+    // Check if it's a proper order format (*number means "order has X parts")
     if lines.is_empty() || !lines[0].starts_with('*') {
-        return None;
+        return None; // Can't understand this order
     }
     
-    let array_len: usize = lines[0][1..].parse().ok()?; // Parse number of arguments
-    let mut args = Vec::new();
+    let array_len: usize = lines[0][1..].parse().ok()?; // How many parts in this order?
+    let mut args = Vec::new(); // Collect order details here
     let mut line_idx = 1;
     
-    // Parse each argument in the array
+    // Parse each part of the order
     for _ in 0..array_len {
-        // Each argument starts with $L where L is the length
+        // Each part starts with $ and length ($4 means "next item is 4 letters")
         if line_idx >= lines.len() || !lines[line_idx].starts_with('$') {
-            return None;
+            return None; // Malformed order
         }
         
-        let str_len: usize = lines[line_idx][1..].parse().ok()?; // Parse argument length
+        let str_len: usize = lines[line_idx][1..].parse().ok()?; // How long is this item?
         line_idx += 1;
         
-        // Get the actual argument string
+        // Get the actual order item
         if line_idx >= lines.len() {
             return None;
         }
         
         let arg = lines[line_idx].to_string();
         if arg.len() != str_len {
-            return None; // Length mismatch
+            return None; // Length doesn't match what was promised
         }
         
-        args.push(arg);
+        args.push(arg); // Add this item to the order
         line_idx += 1;
     }
     
-    Some(args) // Return parsed command and arguments
+    Some(args) // Return the complete understood order
 }
 
-// RDB length encoding parser - handles variable-length integer encoding
+// Recipe book decoder: How to read the restaurant's special encoding system
 fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     if *pos >= bytes.len() {
         return None;
@@ -82,16 +82,16 @@ fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     let first_byte = bytes[*pos];
     *pos += 1;
     
-    // First two bits determine encoding type
+    // First two bits tell us what encoding system the chef used
     let first_two_bits = (first_byte & 0b11000000) >> 6;
     
     match first_two_bits {
         0b00 => {
-            // 6-bit length: remaining bits contain the value
+            // Small recipe: remaining 6 bits tell us the size
             Some((first_byte & 0b00111111) as u64)
         }
         0b01 => {
-            // 14-bit length: combine with next byte
+            // Medium recipe: combine this byte + next byte for size
             if *pos >= bytes.len() {
                 return None;
             }
@@ -101,7 +101,7 @@ fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
             Some(length)
         }
         0b10 => {
-            // 32-bit length: next 4 bytes (big-endian)
+            // Large recipe: next 4 bytes tell us the size (big recipes!)
             if *pos + 4 > bytes.len() {
                 return None;
             }
@@ -113,23 +113,23 @@ fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
             Some(length)
         }
         0b11 => {
-            // Special encoding marker for integer values
+            // Special encoding - like "this recipe is stored in shorthand"
             Some(0xFF00 | ((first_byte & 0b00111111) as u64))
         }
         _ => None,
     }
 }
 
-// RDB string encoding parser - handles strings and encoded integers
+// Recipe text decoder: How to read ingredients and instructions from the recipe book
 fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
     let length_or_type = parse_length_encoding(bytes, pos)?;
     
     if length_or_type >= 0xFF00 {
-        // Special integer encoding
+        // Special shorthand - numbers stored as symbols instead of words
         let encoding_type = (length_or_type & 0xFF) as u8;
         match encoding_type {
             0x00 => {
-                // 8-bit signed integer
+                // Small number (like "2 cups")
                 if *pos >= bytes.len() {
                     return None;
                 }
@@ -138,7 +138,7 @@ fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
                 Some(val.to_string())
             }
             0x01 => {
-                // 16-bit signed integer (little-endian)
+                // Medium number (like "16 ounces")
                 if *pos + 2 > bytes.len() {
                     return None;
                 }
@@ -147,7 +147,7 @@ fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
                 Some(val.to_string())
             }
             0x02 => {
-                // 32-bit signed integer (little-endian)
+                // Large number (like "3200 calories")
                 if *pos + 4 > bytes.len() {
                     return None;
                 }
@@ -163,7 +163,7 @@ fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
             _ => None,
         }
     } else {
-        // Regular string: read specified number of bytes
+        // Regular text: read the specified number of characters
         let len = length_or_type as usize;
         if *pos + len > bytes.len() {
             return None;
@@ -174,81 +174,82 @@ fn parse_string_encoding(bytes: &[u8], pos: &mut usize) -> Option<String> {
     }
 }
 
-// Pattern matching for KEYS command - supports wildcards
+// Menu search helper: Does this dish match what the customer is looking for?
 fn matches_pattern(key: &str, pattern: &str) -> bool {
     if pattern == "*" {
-        return true; // Match all keys
+        return true; // "*" means "show me everything on the menu"
     }
     
-    // Simple glob pattern matching
+    // Simple menu pattern matching
     if pattern.contains('*') {
         if pattern == "*" {
             return true;
         }
-        // More complex pattern matching could be implemented here
+        // More complex search patterns could be added here
         true
     } else {
-        key == pattern // Exact match only
+        key == pattern // Exact dish name match only
     }
 }
 
-// RDB file loader - restores data from persistence file on startup
+// Restaurant opening: Read the stored recipe book when opening for business
 fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
     let mut data_store = HashMap::new();
     let rdb_path = Path::new(&config.dir).join(&config.dbfilename);
     
-    // Check if RDB file exists
+    // Check if recipe book exists (restaurant might be brand new)
     if !rdb_path.exists() {
-        return data_store; // Return empty store if file doesn't exist
+        return data_store; // Empty menu for new restaurant
     }
     
-    // Open and read RDB file
+    // Try to open the recipe book
     let file = match File::open(&rdb_path) {
         Ok(f) => f,
-        Err(_) => return data_store, // Return empty store on error
+        Err(_) => return data_store, // Couldn't read recipes, start with empty menu
     };
     
+    // Read the entire recipe book
     let mut reader = BufReader::new(file);
     let mut buffer = Vec::new();
     if reader.read_to_end(&mut buffer).is_err() {
-        return data_store; // Return empty store if can't read file
+        return data_store; // Recipe book damaged, start fresh
     }
     
     let mut pos = 0;
     
-    // Validate RDB file header (should be "REDIS" + version)
+    // Check recipe book header - should start with "REDIS" (Restaurant Electronic Data Info System)
     if buffer.len() < 9 || &buffer[0..5] != b"REDIS" {
-        return data_store;
+        return data_store; // Not a valid recipe book
     }
-    pos = 9; // Skip header
+    pos = 9; // Skip the header stamp
     
-    // Parse RDB file sections
+    // Read through all the recipes section by section
     while pos < buffer.len() {
-        let opcode = buffer[pos]; // Section type marker
+        let opcode = buffer[pos]; // What type of section is this?
         pos += 1;
         
         match opcode {
             0xFA => {
-                // Metadata section - skip
+                // Restaurant info section (like "established 1985") - skip for now
                 if let Some(_key) = parse_string_encoding(&buffer, &mut pos) {
                     let _value = parse_string_encoding(&buffer, &mut pos);
                 }
             }
             0xFE => {
-                // Database selector
+                // Menu section marker (like "APPETIZERS" or "MAIN COURSES")
                 let _db_index = parse_length_encoding(&buffer, &mut pos);
             }
             0xFB => {
-                // Hash table size information - skip
+                // Menu organization info - skip
                 let _hash_table_size = parse_length_encoding(&buffer, &mut pos);
                 let _expire_hash_table_size = parse_length_encoding(&buffer, &mut pos);
             }
             0xFC => {
-                // Key-value pair with millisecond expiration
+                // Recipe with precise expiration (like "fresh until 2:30 PM")
                 if pos + 8 > buffer.len() {
                     break;
                 }
-                // Read 8-byte timestamp (little-endian)
+                // Read 8-byte expiration time stamp
                 let expire_timestamp = u64::from_le_bytes([
                     buffer[pos],
                     buffer[pos + 1],
@@ -261,14 +262,14 @@ fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
                 ]) as u128;
                 pos += 8;
                 
-                // Skip value type byte
+                // Skip dish type marker
                 if pos >= buffer.len() {
                     break;
                 }
                 let _value_type = buffer[pos];
                 pos += 1;
                 
-                // Parse key and value
+                // Read dish name and recipe
                 if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
                     if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
                         data_store.insert(
@@ -282,28 +283,28 @@ fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
                 }
             }
             0xFD => {
-                // Key-value pair with second expiration
+                // Recipe with day-based expiration (like "good until tomorrow")
                 if pos + 4 > buffer.len() {
                     break;
                 }
-                // Read 4-byte timestamp (little-endian) and convert to milliseconds
+                // Read 4-byte day stamp and convert to precise time
                 let expire_timestamp = u32::from_le_bytes([
                     buffer[pos],
                     buffer[pos + 1],
                     buffer[pos + 2],
                     buffer[pos + 3],
                 ]) as u128
-                    * 1000; // Convert seconds to milliseconds
+                    * 1000; // Convert days to precise time
                 pos += 4;
                 
-                // Skip value type byte
+                // Skip dish type marker
                 if pos >= buffer.len() {
                     break;
                 }
                 let _value_type = buffer[pos];
                 pos += 1;
                 
-                // Parse key and value
+                // Read dish name and recipe
                 if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
                     if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
                         data_store.insert(
@@ -317,14 +318,14 @@ fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
                 }
             }
             0xFF => {
-                // End of file marker
+                // End of recipe book marker
                 break;
             }
             _ => {
-                // Regular key-value pair (no expiration)
+                // Regular recipe (always available, like house specials)
                 let _value_type = opcode;
                 
-                // Parse key and value
+                // Read dish name and recipe
                 if let Some(key) = parse_string_encoding(&buffer, &mut pos) {
                     if let Some(value) = parse_string_encoding(&buffer, &mut pos) {
                         data_store.insert(
@@ -340,24 +341,25 @@ fn load_rdb_file(config: &Config) -> HashMap<String, StoredValue> {
         }
     }
     
-    data_store // Return restored data
+    data_store // Return the restored menu
 }
 
-// Command line argument parser
+// Restaurant setup: Read management instructions from the opening checklist
 fn parse_args() -> Config {
     let args: Vec<String> = env::args().collect();
     
-    // Default configuration values
-    let mut dir = "/tmp/redis-data".to_string();
-    let mut dbfilename = "dump.rdb".to_string();
-    let mut port = 6379u16;
-    let mut replicaof = None;
+    // Default restaurant setup
+    let mut dir = "/tmp/redis-data".to_string(); // Default kitchen storage
+    let mut dbfilename = "dump.rdb".to_string(); // Default recipe book name
+    let mut port = 6379u16; // Default restaurant location (address 6379)
+    let mut replicaof = None; // Default: independent restaurant (not a franchise)
     
     let mut i = 1;
     while i < args.len() {
+        // Read management instructions
         match args[i].as_str() {
             "--dir" => {
-                // Set RDB file directory
+                // "Store recipe books in this kitchen location"
                 if i + 1 < args.len() {
                     dir = args[i + 1].clone();
                     i += 2;
@@ -366,7 +368,7 @@ fn parse_args() -> Config {
                 }
             }
             "--dbfilename" => {
-                // Set RDB filename
+                // "Name the recipe book this"
                 if i + 1 < args.len() {
                     dbfilename = args[i + 1].clone();
                     i += 2;
@@ -375,10 +377,10 @@ fn parse_args() -> Config {
                 }
             }
             "--port" => {
-                // Set server port
+                // "Open the restaurant at this address/location"
                 if i + 1 < args.len() {
                     if let Ok(parsed_port) = args[i + 1].parse::<u16>() {
-                        port = parsed_port;
+                        port = parsed_port; // Use custom location if valid
                     }
                     i += 2;
                 } else {
@@ -386,7 +388,7 @@ fn parse_args() -> Config {
                 }
             }
             "--replicaof" => {
-                // Configure as replica: --replicaof "host port"
+                // "Operate as a franchise restaurant, reporting to headquarters"
                 if i + 1 < args.len() {
                     let master_info = &args[i + 1];
                     let parts: Vec<&str> = master_info.split_whitespace().collect();
@@ -406,70 +408,71 @@ fn parse_args() -> Config {
         }
     }
     
-    Config { dir, dbfilename, port, replicaof }
+    Config { dir, dbfilename, port, replicaof } // Return restaurant configuration
 }
 
-// Main server function
+// Main restaurant operations
 fn main() {
-    // Parse command line arguments and configure server
+    // Read management instructions and set up restaurant configuration
     let config = parse_args();
     let bind_address = format!("127.0.0.1:{}", config.port);
     let listener = TcpListener::bind(&bind_address).unwrap();
     
-    // Load existing data from RDB file
+    // Load existing menu from recipe book (if it exists)
     let initial_data = load_rdb_file(&config);
     
-    // Create thread-safe shared storage
+    // Create the restaurant's shared order book (thread-safe for all waiters)
     let data_store = Arc::new(Mutex::new(initial_data));
 
-    // Accept incoming connections
+    // Open the restaurant and wait for customers
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
-                // Clone shared resources for this connection
+                // Give each waiter access to the shared order book and restaurant info
                 let store_clone = Arc::clone(&data_store);
                 let config_clone = config.clone();
                 
-                // Spawn thread to handle this client
+                // Assign a dedicated waiter to this customer
                 thread::spawn(move || {
-                    let mut buffer = [0; 1024]; // Buffer for incoming data
+                    let mut buffer = [0; 1024]; // Waiter's notepad for taking orders
                     
-                    // Handle client requests in a loop
+                    // Keep serving this customer
                     loop {
                         match stream.read(&mut buffer) {
-                            Ok(0) => break, // Client disconnected
+                            Ok(0) => break, // Customer left the restaurant
                             Ok(n) => {
-                                // Try to parse Redis command
+                                // Try to understand the customer's order using waiter training
                                 if let Some(args) = parse_redis_command(&buffer, n) {
                                     if !args.is_empty() {
-                                        let command = args[0].to_uppercase();
+                                        let command = args[0].to_uppercase(); // Orders are case-insensitive
                                         
-                                        // Execute command based on type
+                                        // Provide service based on what the customer ordered
                                         match command.as_str() {
                                             "PING" => {
-                                                // Simple ping-pong response
-                                                stream.write_all(b"+PONG\r\n").unwrap();
+                                                // Customer just wants to know if we're open: "Are you there?"
+                                                stream.write_all(b"+PONG\r\n").unwrap(); // "Yes, we're here!"
                                             }
                                             "ECHO" => {
-                                                // Echo back the argument
+                                                // Customer wants confirmation: "Did you hear me say 'hello'?"
                                                 if args.len() > 1 {
                                                     let arg = &args[1];
                                                     let response = format!("${}\r\n{}\r\n", arg.len(), arg);
-                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                    stream.write_all(response.as_bytes()).unwrap(); // "Yes, I heard 'hello'"
                                                 }
                                             }
                                             "SET" => {
-                                                // Store key-value pair with optional expiration
+                                                // Customer wants to place an order: "SET burger well-done" or "SET soup hot px 300000"
                                                 if args.len() >= 3 {
-                                                    let key = &args[1];
-                                                    let value = &args[2];
+                                                    let key = &args[1]; // Dish name
+                                                    let value = &args[2]; // Special instructions
                                                     let mut expires_at = None;
                                                     
-                                                    // Check for PX option (millisecond expiration)
+                                                    // Check if customer wants timed service: "px 300000" means "serve within 5 minutes"
                                                     if args.len() >= 5 {
                                                         let option = args[3].to_uppercase();
                                                         if option == "PX" {
                                                             if let Ok(ms) = args[4].parse::<u128>() {
+                                                                // Set kitchen timer: current time + service window
                                                                 let now = SystemTime::now()
                                                                     .duration_since(UNIX_EPOCH)
                                                                     .unwrap()
@@ -479,26 +482,27 @@ fn main() {
                                                         }
                                                     }
                                                     
+                                                    // Create order ticket with details and optional timer
                                                     let stored_value = StoredValue {
                                                         value: value.clone(),
                                                         expires_at,
                                                     };
                                                     
-                                                    // Store in shared data structure
+                                                    // Add order to the restaurant's order book
                                                     let mut store = store_clone.lock().unwrap();
                                                     store.insert(key.clone(), stored_value);
-                                                    stream.write_all(b"+OK\r\n").unwrap();
+                                                    stream.write_all(b"+OK\r\n").unwrap(); // "Order taken!"
                                                 }
                                             }
                                             "GET" => {
-                                                // Retrieve key value with expiration check
+                                                // Customer asking about their order: "GET burger" (is my burger ready?)
                                                 if args.len() >= 2 {
-                                                    let key = &args[1];
+                                                    let key = &args[1]; // Which dish?
                                                     let mut store = store_clone.lock().unwrap();
                                                     
                                                     match store.get(key) {
                                                         Some(stored_value) => {
-                                                            // Check if key has expired
+                                                            // Check if this order has expired (missed the service window)
                                                             if let Some(expires_at) = stored_value.expires_at {
                                                                 let now = SystemTime::now()
                                                                     .duration_since(UNIX_EPOCH)
@@ -506,55 +510,55 @@ fn main() {
                                                                     .as_millis();
                                                                 
                                                                 if now >= expires_at {
-                                                                    // Key expired, remove and return null
+                                                                    // Order expired! Remove it and say "sorry, we missed the deadline"
                                                                     store.remove(key);
-                                                                    stream.write_all(b"$-1\r\n").unwrap();
+                                                                    stream.write_all(b"$-1\r\n").unwrap(); // "Order cancelled"
                                                                 } else {
-                                                                    // Key valid, return value
+                                                                    // Order is still good! Serve it
                                                                     let response = format!("${}\r\n{}\r\n", stored_value.value.len(), stored_value.value);
-                                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                                    stream.write_all(response.as_bytes()).unwrap(); // "Here's your dish!"
                                                                 }
                                                             } else {
-                                                                // No expiration, return value
+                                                                // No timer, regular order - serve it
                                                                 let response = format!("${}\r\n{}\r\n", stored_value.value.len(), stored_value.value);
-                                                                stream.write_all(response.as_bytes()).unwrap();
+                                                                stream.write_all(response.as_bytes()).unwrap(); // "Here's your dish!"
                                                             }
                                                         }
                                                         None => {
-                                                            // Key not found
-                                                            stream.write_all(b"$-1\r\n").unwrap();
+                                                            // No such order exists
+                                                            stream.write_all(b"$-1\r\n").unwrap(); // "We don't have that order"
                                                         }
                                                     }
                                                 }
                                             }
                                             "CONFIG" => {
-                                                // Return configuration values
+                                                // Customer asking about restaurant setup: "CONFIG GET dir" (where's your kitchen?)
                                                 if args.len() >= 3 && args[1].to_uppercase() == "GET" {
                                                     let param = &args[2];
                                                     match param.to_lowercase().as_str() {
                                                         "dir" => {
-                                                            // Return directory configuration
+                                                            // "Where do you store your recipes?"
                                                             let response = format!("*2\r\n$3\r\ndir\r\n${}\r\n{}\r\n", 
                                                                 config_clone.dir.len(), config_clone.dir);
                                                             stream.write_all(response.as_bytes()).unwrap();
                                                         }
                                                         "dbfilename" => {
-                                                            // Return filename configuration
+                                                            // "What's your recipe book called?"
                                                             let response = format!("*2\r\n$10\r\ndbfilename\r\n${}\r\n{}\r\n", 
                                                                 config_clone.dbfilename.len(), config_clone.dbfilename);
                                                             stream.write_all(response.as_bytes()).unwrap();
                                                         }
                                                         _ => {
-                                                            // Unknown configuration parameter
+                                                            // "Don't know that information"
                                                             stream.write_all(b"*0\r\n").unwrap();
                                                         }
                                                     }
                                                 }
                                             }
                                             "KEYS" => {
-                                                // Return keys matching pattern
+                                                // Customer wants to see the menu: "KEYS *" (what dishes do you have?)
                                                 if args.len() >= 2 {
-                                                    let pattern = &args[1];
+                                                    let pattern = &args[1]; // What kind of dishes? (* = all)
                                                     let store = store_clone.lock().unwrap();
                                                     let now = SystemTime::now()
                                                         .duration_since(UNIX_EPOCH)
@@ -563,80 +567,80 @@ fn main() {
                                                     
                                                     let mut matching_keys = Vec::new();
                                                     
-                                                    // Find all non-expired keys matching pattern
+                                                    // Look through all current orders/dishes
                                                     for (key, stored_value) in store.iter() {
-                                                        // Check if key has expired
+                                                        // Check if this order has expired
                                                         let is_expired = if let Some(expires_at) = stored_value.expires_at {
                                                             now >= expires_at
                                                         } else {
                                                             false
                                                         };
                                                         
-                                                        // Add to results if not expired and matches pattern
+                                                        // Add to menu if not expired and matches what they're looking for
                                                         if !is_expired && matches_pattern(key, pattern) {
                                                             matching_keys.push(key.clone());
                                                         }
                                                     }
                                                     
-                                                    // Format response as array
+                                                    // Present the menu list
                                                     let mut response = format!("*{}\r\n", matching_keys.len());
                                                     for key in matching_keys {
                                                         response.push_str(&format!("${}\r\n{}\r\n", key.len(), key));
                                                     }
-                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                    stream.write_all(response.as_bytes()).unwrap(); // "Here's our current menu"
                                                 } else {
-                                                    // No pattern provided, return empty array
+                                                    // No menu request specifics, show empty menu
                                                     stream.write_all(b"*0\r\n").unwrap();
                                                 }
                                             }
                                             "INFO" => {
-                                                // Return server information
+                                                // Customer asking about restaurant status: "INFO replication"
                                                 if args.len() >= 2 && args[1].to_lowercase() == "replication" {
-                                                    // Determine server role
+                                                    // Tell them what kind of restaurant this is
                                                     let role = if config_clone.replicaof.is_some() {
-                                                        "slave"  // This server is a replica
+                                                        "slave"  // This is a franchise restaurant
                                                     } else {
-                                                        "master" // This server is a master
+                                                        "master" // This is an independent restaurant
                                                     };
                                                     
                                                     let mut info_lines = vec![format!("role:{}", role)];
                                                     
-                                                    // Add master-specific replication information
+                                                    // Add headquarters tracking info for independent restaurants
                                                     if config_clone.replicaof.is_none() {
-                                                        // Master replication ID (40-character identifier)
+                                                        // Restaurant ID (unique identifier like "Restaurant License #8371b4fb...")
                                                         info_lines.push("master_replid:8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb".to_string());
-                                                        // Master replication offset (tracks replication stream position)
+                                                        // Order tracking number (how many orders processed since opening)
                                                         info_lines.push("master_repl_offset:0".to_string());
                                                     }
                                                     
-                                                    // Join all info lines with CRLF
+                                                    // Combine all status info
                                                     let info_response = info_lines.join("\r\n");
                                                     let response = format!("${}\r\n{}\r\n", info_response.len(), info_response);
-                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                    stream.write_all(response.as_bytes()).unwrap(); // "Here's our restaurant info"
                                                 }
                                             }
                                             _ => {
-                                                // Unknown command, default to PONG
-                                                stream.write_all(b"+PONG\r\n").unwrap();
+                                                // Customer said something we don't understand, just be friendly
+                                                stream.write_all(b"+PONG\r\n").unwrap(); // "I'm here to help!"
                                             }
                                         }
                                     }
                                 } else {
-                                    // Couldn't parse command, default to PONG
-                                    stream.write_all(b"+PONG\r\n").unwrap();
+                                    // Couldn't understand the customer, just be friendly
+                                    stream.write_all(b"+PONG\r\n").unwrap(); // "I'm here to help!"
                                 }
                             }
                             Err(e) => {
-                                // Error reading from client
+                                // Something went wrong with this customer
                                 println!("error reading from stream: {}", e);
-                                break;
+                                break; // Stop serving this customer
                             }
                         }
                     }
                 });
             }
             Err(e) => {
-                // Error accepting connection
+                // Someone tried to enter but couldn't get in
                 println!("error: {}", e);
             }
         }
@@ -644,71 +648,71 @@ fn main() {
 }
 ```
 
-=== KEY TECHNICAL FEATURES ===
+=== KEY RESTAURANT FEATURES ===
 
-**1. Multi-threaded Architecture**
-- Main thread listens for connections
-- Each client gets a dedicated thread
-- Thread-safe shared storage using `Arc<Mutex<HashMap>>`
-- Concurrent request processing without blocking
+**1. Multi-Waiter System (Multi-threading)**
+- Restaurant manager listens for new customers at the front door
+- Each customer gets their own dedicated waiter (thread)
+- All waiters share the same order book safely using special coordination
+- Multiple customers can be served simultaneously without waiting
 
-**2. Redis RESP Protocol Implementation**
-- Parses array format: `*N\r\n$L\r\nstring\r\n...`
-- Handles bulk strings with length prefixes
-- Supports all basic Redis command formats
-- Proper error handling for malformed requests
+**2. Customer Order Language (Redis RESP Protocol)**
+- Waiters are trained to understand the restaurant's special ordering format
+- Orders like: `*2\r\n$3\r\nSET\r\n$6\r\nburger\r\n` mean "I want to SET an order for a burger"
+- Properly handles all customer communication with length checking
+- Graceful handling of customers who speak unclearly
 
-**3. Data Storage with TTL Support**
-- `StoredValue` struct with optional expiration
-- Millisecond-precision timestamps using `SystemTime`
-- Automatic cleanup during GET operations
-- Memory-efficient storage with HashMap backing
+**3. Order Management with Timing (Data Storage with TTL)**
+- Each order can have special timing requirements (like "serve within 5 minutes")
+- Restaurant clock tracks all timing precisely down to the millisecond
+- Automatic order cleanup when deadlines are missed
+- Efficient order book organization using the restaurant's filing system
 
-**4. RDB Persistence (Read-only)**
-- Binary file format parsing
-- Length and string encoding support
-- Multiple expiration formats (seconds, milliseconds)
-- Graceful handling of corrupted/missing files
-- Automatic data restoration on startup
+**4. Recipe Book System (RDB Persistence)**
+- Restaurant can save and restore its complete menu from storage
+- Handles complex recipe encoding systems from the chef
+- Supports both daily specials with expiration and permanent menu items
+- Graceful recovery if recipe books are damaged or missing
+- Automatic menu restoration when restaurant reopens
 
-**5. Replication Role Management**
-- Master/slave role determination via `--replicaof` flag
-- INFO command reports role and replication state
-- Master servers include:
-  - `master_replid`: 40-character unique identifier
-  - `master_repl_offset`: Replication stream position (starts at 0)
-- Slave servers report only role information
+**5. Restaurant Type Management (Replication Roles)**
+- Independent restaurants vs. franchise locations determined by setup
+- INFO requests tell customers what type of restaurant this is
+- Independent restaurants provide:
+  - `master_replid`: Restaurant license number (40-character unique ID)
+  - `master_repl_offset`: Order counter (how many orders processed, starts at 0)
+- Franchise restaurants report only their basic role information
 
-**6. Command Implementation**
-- **PING**: Basic connectivity test
-- **ECHO**: Argument reflection
-- **SET/GET**: Key-value storage with optional TTL
-- **CONFIG GET**: Configuration parameter retrieval
-- **KEYS**: Pattern-based key enumeration
-- **INFO**: Server status and replication information
+**6. Service Menu (Command Implementation)**
+- **PING**: "Are you open?" → "Yes, we're here!" (connectivity check)
+- **ECHO**: "Did you hear me say X?" → "Yes, I heard X" (confirmation)
+- **SET/GET**: Order placement and retrieval with optional timing windows
+- **CONFIG GET**: Questions about restaurant setup and kitchen location
+- **KEYS**: "What's on the menu?" with search capabilities
+- **INFO**: Restaurant status, type, and tracking information
 
-**7. Configuration System**
-- Command-line argument parsing
-- Configurable port, directory, filename
-- Replica configuration with master host/port
-- Default values for all parameters
+**7. Restaurant Setup System (Configuration)**
+- Management can specify kitchen storage location, recipe book names
+- Configurable restaurant address/location (port number)
+- Franchise setup with headquarters connection information
+- Default values for all restaurant settings
 
-**8. Error Handling and Resilience**
-- Graceful degradation for parsing errors
-- Default responses for unknown commands
-- File I/O error handling
-- Thread-safe operations with proper locking
+**8. Customer Service Excellence (Error Handling)**
+- Friendly responses even when orders are unclear
+- Default helpful attitude for unknown requests
+- Proper handling of kitchen problems and storage issues
+- Safe coordination between all waiters to prevent order mix-ups
 
-**9. Performance Considerations**
-- O(1) key lookups in HashMap
-- Minimal lock contention with quick operations
-- Thread-per-connection model for moderate concurrency
-- Efficient memory usage with clone-on-need
+**9. Efficient Operations (Performance)**
+- Instant order lookups in the restaurant's filing system
+- Quick waiter coordination with minimal delays
+- One-waiter-per-customer model for personal service
+- Smart memory management for busy restaurant operations
 
-**10. Protocol Compliance**
-- Correct RESP formatting for all responses
-- Proper bulk string and array encoding
-- Standard Redis error responses
-- Compatible with redis-cli and other clients
+**10. Industry Standards (Protocol Compliance)**
+- Uses standard restaurant communication format
+- Proper order formatting and response structure
+- Compatible with standard restaurant management systems
+- Professional service standards throughout
 
-This implementation provides a solid foundation for a Redis-compatible server with proper replication role support, persistence capabilities, and multi-threaded client handling.
+This restaurant system provides excellent customer service with proper franchise management support, recipe persistence, and multi-customer handling capabilities!
