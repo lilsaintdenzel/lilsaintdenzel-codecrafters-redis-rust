@@ -10,7 +10,7 @@ use std::collections::HashMap;  // The restaurant's order book
 use std::env;                   // Reading the restaurant's opening instructions
 use std::fs::File;              // Reading the restaurant's recipe book from storage
 use std::io::{BufReader, Read, Write}; // Taking orders and serving customers
-use std::net::TcpListener;      // The restaurant's front door
+use std::net::{TcpListener, TcpStream}; // The restaurant's front door and connections to headquarters
 use std::path::Path;            // Finding where recipe books are stored
 use std::sync::{Arc, Mutex};    // Safe way to share the order book between waiters
 use std::thread;                // Restaurant waiters (each customer gets their own waiter)
@@ -411,10 +411,47 @@ fn parse_args() -> Config {
     Config { dir, dbfilename, port, replicaof } // Return restaurant configuration
 }
 
+// 🏢 Restaurant networking: Connect to headquarters for franchise coordination
+fn connect_to_master(master_host: &str, master_port: u16) -> Result<TcpStream, std::io::Error> {
+    let master_address = format!("{}:{}", master_host, master_port);
+    println!("Connecting to headquarters at {}", master_address);
+    TcpStream::connect(master_address)
+}
+
+// 📞 Opening check-in: Call headquarters when franchise restaurant opens
+fn send_ping_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send PING call as restaurant protocol: *1\r\n$4\r\nPING\r\n
+    let ping_command = b"*1\r\n$4\r\nPING\r\n";
+    stream.write_all(ping_command)?;
+    
+    // Read headquarters response (should be +PONG\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    // Response processing not needed for basic check-in
+    
+    println!("Sent opening check-in call to headquarters");
+    Ok(())
+}
+
 // Main restaurant operations
 fn main() {
     // Read management instructions and set up restaurant configuration
     let config = parse_args();
+    
+    // 🏢 If this is a franchise restaurant, connect to headquarters and check in
+    if let Some((master_host, master_port)) = &config.replicaof {
+        match connect_to_master(master_host, *master_port) {
+            Ok(mut master_stream) => {
+                if let Err(e) = send_ping_to_master(&mut master_stream) {
+                    println!("Failed to check in with headquarters: {}", e);
+                }
+            }
+            Err(e) => {
+                println!("Failed to connect to headquarters: {}", e);
+            }
+        }
+    }
+    
     let bind_address = format!("127.0.0.1:{}", config.port);
     let listener = TcpListener::bind(&bind_address).unwrap();
     
@@ -715,4 +752,13 @@ fn main() {
 - Compatible with standard restaurant management systems
 - Professional service standards throughout
 
-This restaurant system provides excellent customer service with proper franchise management support, recipe persistence, and multi-customer handling capabilities!
+**11. Franchise Check-in System (Replica Handshake)**
+- Franchise restaurants automatically call headquarters when opening
+- `connect_to_master()` establishes connection to headquarters
+- `send_ping_to_master()` makes formal opening check-in call
+- Headquarters confirms with response to acknowledge the new franchise
+- Uses proper restaurant protocol: `*1\r\n$4\r\nPING\r\n`
+- Essential first step in franchise-headquarters coordination
+- Like a new franchise calling corporate to say "We're open for business!"
+
+This restaurant system provides excellent customer service with proper franchise management support, automatic headquarters check-in, recipe persistence, and multi-customer handling capabilities!

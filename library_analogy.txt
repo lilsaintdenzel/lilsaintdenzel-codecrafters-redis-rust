@@ -51,6 +51,7 @@ The librarians are specially trained to understand the library's cataloging syst
 - **NEW**: Visitors can browse what's currently available using the KEYS command
 - **NEW**: The library can open multiple branch locations on different addresses (port configuration for distributed libraries)
 - **NEW**: The library can operate as a replica, connecting to a master library for coordination (--replicaof flag)
+- **NEW**: Replica libraries automatically perform an opening handshake with their master library by sending a PING greeting
 - **NEW**: Visitors can ask about the library's role and status using the INFO command (reports role:master with replication tracking for main library, role:slave for replica)
 
 The library is now much more sophisticated - it can handle different services, manage temporary collections with expiration times, support multiple branches, and respond appropriately to all visitor needs!
@@ -63,7 +64,7 @@ use std::collections::HashMap;  // The library's catalog system
 use std::env;                   // For reading administrative instructions (command line args)
 use std::fs::File;              // For reading archive files
 use std::io::{BufReader, Read, Write}; // For communicating with visitors and reading files
-use std::net::TcpListener;      // The library building
+use std::net::{TcpListener, TcpStream}; // The library building and connections to master library
 use std::path::Path;            // For working with file paths
 use std::sync::{Arc, Mutex};    // Safe way to share the catalog between librarians
 use std::thread;                // Librarians
@@ -420,9 +421,46 @@ fn parse_args() -> Config {
     Config { dir, dbfilename, port, replicaof }  // Return library configuration with address and master info
 }
 
+// 🔗 Library networking: Connect to master library for replica coordination
+fn connect_to_master(master_host: &str, master_port: u16) -> Result<TcpStream, std::io::Error> {
+    let master_address = format!("{}:{}", master_host, master_port);
+    println!("Connecting to master library at {}", master_address);
+    TcpStream::connect(master_address)
+}
+
+// 📞 Opening handshake: Send greeting to master library when replica opens
+fn send_ping_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send PING greeting as library protocol: *1\r\n$4\r\nPING\r\n
+    let ping_command = b"*1\r\n$4\r\nPING\r\n";
+    stream.write_all(ping_command)?;
+    
+    // Read master's response (should be +PONG\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    // Response processing not needed for basic handshake
+    
+    println!("Sent opening PING greeting to master library");
+    Ok(())
+}
+
 fn main() {
     // 📋 Read administrative instructions and set up library configuration
     let config = parse_args();
+    
+    // 🔗 If this is a replica library, connect to master and send opening greeting
+    if let Some((master_host, master_port)) = &config.replicaof {
+        match connect_to_master(master_host, *master_port) {
+            Ok(mut master_stream) => {
+                if let Err(e) = send_ping_to_master(&mut master_stream) {
+                    println!("Failed to send opening greeting to master library: {}", e);
+                }
+            }
+            Err(e) => {
+                println!("Failed to connect to master library: {}", e);
+            }
+        }
+    }
+    
     // 🏛️ Open the library at the configured address (default 6379, or custom via --port)
     let bind_address = format!("127.0.0.1:{}", config.port);
     let listener = TcpListener::bind(&bind_address).unwrap();
@@ -733,7 +771,16 @@ fn main() {
    - `Config.replicaof` field stores master library information: `Some(("localhost", 6379))`
    - `parse_args()` parses the master info format: splits "localhost 6379" into host and port
    - INFO command automatically detects replica mode and reports `role:slave`
-   - Prepares foundation for future replication features where replica syncs with master
+   - **NEW**: Replica libraries automatically perform opening handshake with master
    - Like opening a branch library that reports to the main headquarters
+
+14. **Opening Handshake System** - like new branch library introduction:
+   - When replica library opens, it immediately connects to master library
+   - `connect_to_master()` establishes connection to master library address
+   - `send_ping_to_master()` sends formal greeting: PING command as RESP format
+   - Master library responds with PONG to acknowledge the new branch
+   - Handshake uses proper library protocol: `*1\r\n$4\r\nPING\r\n`
+   - Essential first step in replica-master coordination
+   - Like a new branch calling headquarters to say "We're open for business!"
 
 The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, provide status information, and respond appropriately to all visitor needs!
