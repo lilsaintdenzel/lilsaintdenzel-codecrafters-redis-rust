@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
-use std::net::TcpListener;
+use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -380,8 +380,43 @@ fn parse_args() -> Config {
     Config { dir, dbfilename, port, replicaof }
 }
 
+fn connect_to_master(master_host: &str, master_port: u16) -> Result<TcpStream, std::io::Error> {
+    let master_address = format!("{}:{}", master_host, master_port);
+    println!("Connecting to master at {}", master_address);
+    TcpStream::connect(master_address)
+}
+
+fn send_ping_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send PING command as RESP array: *1\r\n$4\r\nPING\r\n
+    let ping_command = b"*1\r\n$4\r\nPING\r\n";
+    stream.write_all(ping_command)?;
+    
+    // Read response (should be +PONG\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    // We don't need to process the response for this stage
+    
+    println!("Sent PING to master");
+    Ok(())
+}
+
 fn main() {
     let config = parse_args();
+    
+    // If this is a replica, connect to master and send PING
+    if let Some((master_host, master_port)) = &config.replicaof {
+        match connect_to_master(master_host, *master_port) {
+            Ok(mut master_stream) => {
+                if let Err(e) = send_ping_to_master(&mut master_stream) {
+                    println!("Failed to send PING to master: {}", e);
+                }
+            }
+            Err(e) => {
+                println!("Failed to connect to master: {}", e);
+            }
+        }
+    }
+    
     let bind_address = format!("127.0.0.1:{}", config.port);
     let listener = TcpListener::bind(&bind_address).unwrap();
     let initial_data = load_rdb_file(&config);
