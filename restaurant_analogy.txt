@@ -433,17 +433,66 @@ fn send_ping_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+// 📍 Location registration: Tell headquarters what address this franchise operates at
+fn send_replconf_listening_port(stream: &mut TcpStream, port: u16) -> Result<(), std::io::Error> {
+    // Send location registration: REPLCONF listening-port <ADDRESS>
+    // Format: *3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n
+    let port_str = port.to_string();
+    let command = format!(
+        "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${}\r\n{}\r\n",
+        port_str.len(),
+        port_str
+    );
+    stream.write_all(command.as_bytes())?;
+    
+    // Read headquarters acknowledgment (should be +OK\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    
+    println!("Registered franchise location with headquarters");
+    Ok(())
+}
+
+// 🎯 Service capabilities: Tell headquarters what services this franchise offers
+fn send_replconf_capa_psync2(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send service capabilities: REPLCONF capa psync2
+    // Format: *3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n
+    let command = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
+    stream.write_all(command)?;
+    
+    // Read headquarters acknowledgment (should be +OK\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    
+    println!("Reported franchise capabilities to headquarters");
+    Ok(())
+}
+
 // Main restaurant operations
 fn main() {
     // Read management instructions and set up restaurant configuration
     let config = parse_args();
     
-    // 🏢 If this is a franchise restaurant, connect to headquarters and check in
+    // 🏢 If this is a franchise restaurant, connect to headquarters and complete registration
     if let Some((master_host, master_port)) = &config.replicaof {
         match connect_to_master(master_host, *master_port) {
             Ok(mut master_stream) => {
+                // Step 1: Opening check-in call
                 if let Err(e) = send_ping_to_master(&mut master_stream) {
                     println!("Failed to check in with headquarters: {}", e);
+                    return;
+                }
+                
+                // Step 2: Register franchise location
+                if let Err(e) = send_replconf_listening_port(&mut master_stream, config.port) {
+                    println!("Failed to register location with headquarters: {}", e);
+                    return;
+                }
+                
+                // Step 3: Report franchise capabilities
+                if let Err(e) = send_replconf_capa_psync2(&mut master_stream) {
+                    println!("Failed to report capabilities to headquarters: {}", e);
+                    return;
                 }
             }
             Err(e) => {
@@ -752,13 +801,15 @@ fn main() {
 - Compatible with standard restaurant management systems
 - Professional service standards throughout
 
-**11. Franchise Check-in System (Replica Handshake)**
-- Franchise restaurants automatically call headquarters when opening
+**11. Complete Franchise Registration System (Replica Handshake)**
+- Franchise restaurants automatically register with headquarters when opening
 - `connect_to_master()` establishes connection to headquarters
-- `send_ping_to_master()` makes formal opening check-in call
-- Headquarters confirms with response to acknowledge the new franchise
-- Uses proper restaurant protocol: `*1\r\n$4\r\nPING\r\n`
-- Essential first step in franchise-headquarters coordination
-- Like a new franchise calling corporate to say "We're open for business!"
+- **Step 1**: `send_ping_to_master()` makes formal opening check-in call
+- **Step 2**: `send_replconf_listening_port()` registers franchise location address
+- **Step 3**: `send_replconf_capa_psync2()` reports franchise service capabilities
+- Each step waits for headquarters OK confirmation before proceeding
+- Headquarters acknowledges each step to confirm successful registration
+- Uses proper restaurant protocol throughout the entire process
+- Like a new franchise calling corporate: "Hello, we're at 123 Main St, and we offer psync2 services!"
 
 This restaurant system provides excellent customer service with proper franchise management support, automatic headquarters check-in, recipe persistence, and multi-customer handling capabilities!

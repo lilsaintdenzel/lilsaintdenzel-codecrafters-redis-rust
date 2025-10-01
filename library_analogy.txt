@@ -443,16 +443,65 @@ fn send_ping_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+// 📋 Branch registration: Tell master what port this branch operates on
+fn send_replconf_listening_port(stream: &mut TcpStream, port: u16) -> Result<(), std::io::Error> {
+    // Send branch address registration: REPLCONF listening-port <PORT>
+    // Format: *3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n
+    let port_str = port.to_string();
+    let command = format!(
+        "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${}\r\n{}\r\n",
+        port_str.len(),
+        port_str
+    );
+    stream.write_all(command.as_bytes())?;
+    
+    // Read master's acknowledgment (should be +OK\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    
+    println!("Registered branch address with master library");
+    Ok(())
+}
+
+// 🎯 Capability announcement: Tell master what services this branch supports
+fn send_replconf_capa_psync2(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send capability announcement: REPLCONF capa psync2
+    // Format: *3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n
+    let command = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
+    stream.write_all(command)?;
+    
+    // Read master's acknowledgment (should be +OK\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    
+    println!("Announced branch capabilities to master library");
+    Ok(())
+}
+
 fn main() {
     // 📋 Read administrative instructions and set up library configuration
     let config = parse_args();
     
-    // 🔗 If this is a replica library, connect to master and send opening greeting
+    // 🔗 If this is a replica library, connect to master and perform full opening handshake
     if let Some((master_host, master_port)) = &config.replicaof {
         match connect_to_master(master_host, *master_port) {
             Ok(mut master_stream) => {
+                // Step 1: Send greeting
                 if let Err(e) = send_ping_to_master(&mut master_stream) {
                     println!("Failed to send opening greeting to master library: {}", e);
+                    return;
+                }
+                
+                // Step 2: Register branch address
+                if let Err(e) = send_replconf_listening_port(&mut master_stream, config.port) {
+                    println!("Failed to register branch address with master library: {}", e);
+                    return;
+                }
+                
+                // Step 3: Announce branch capabilities
+                if let Err(e) = send_replconf_capa_psync2(&mut master_stream) {
+                    println!("Failed to announce branch capabilities to master library: {}", e);
+                    return;
                 }
             }
             Err(e) => {
@@ -774,13 +823,15 @@ fn main() {
    - **NEW**: Replica libraries automatically perform opening handshake with master
    - Like opening a branch library that reports to the main headquarters
 
-14. **Opening Handshake System** - like new branch library introduction:
+14. **Complete Opening Handshake System** - like new branch library introduction:
    - When replica library opens, it immediately connects to master library
    - `connect_to_master()` establishes connection to master library address
-   - `send_ping_to_master()` sends formal greeting: PING command as RESP format
-   - Master library responds with PONG to acknowledge the new branch
-   - Handshake uses proper library protocol: `*1\r\n$4\r\nPING\r\n`
-   - Essential first step in replica-master coordination
-   - Like a new branch calling headquarters to say "We're open for business!"
+   - **Step 1**: `send_ping_to_master()` sends formal greeting: PING command as RESP format
+   - **Step 2**: `send_replconf_listening_port()` registers branch address with master
+   - **Step 3**: `send_replconf_capa_psync2()` announces branch capabilities
+   - Each step waits for master's OK response before proceeding
+   - Master library responds to each step to acknowledge the new branch
+   - Complete handshake uses proper library protocol throughout
+   - Like a new branch calling headquarters: "Hello, we're at address 6380, and we support psync2 synchronization!"
 
 The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, provide status information, and respond appropriately to all visitor needs!
