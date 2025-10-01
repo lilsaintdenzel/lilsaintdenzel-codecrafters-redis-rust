@@ -400,15 +400,62 @@ fn send_ping_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
     Ok(())
 }
 
+fn send_replconf_listening_port(stream: &mut TcpStream, port: u16) -> Result<(), std::io::Error> {
+    // Send REPLCONF listening-port <PORT> as RESP array
+    // *3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n$4\r\n6380\r\n
+    let port_str = port.to_string();
+    let command = format!(
+        "*3\r\n$8\r\nREPLCONF\r\n$14\r\nlistening-port\r\n${}\r\n{}\r\n",
+        port_str.len(),
+        port_str
+    );
+    stream.write_all(command.as_bytes())?;
+    
+    // Read response (should be +OK\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    
+    println!("Sent REPLCONF listening-port to master");
+    Ok(())
+}
+
+fn send_replconf_capa_psync2(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send REPLCONF capa psync2 as RESP array
+    // *3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n
+    let command = b"*3\r\n$8\r\nREPLCONF\r\n$4\r\ncapa\r\n$6\r\npsync2\r\n";
+    stream.write_all(command)?;
+    
+    // Read response (should be +OK\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    
+    println!("Sent REPLCONF capa psync2 to master");
+    Ok(())
+}
+
 fn main() {
     let config = parse_args();
     
-    // If this is a replica, connect to master and send PING
+    // If this is a replica, connect to master and perform handshake
     if let Some((master_host, master_port)) = &config.replicaof {
         match connect_to_master(master_host, *master_port) {
             Ok(mut master_stream) => {
+                // Send PING
                 if let Err(e) = send_ping_to_master(&mut master_stream) {
                     println!("Failed to send PING to master: {}", e);
+                    return;
+                }
+                
+                // Send REPLCONF listening-port
+                if let Err(e) = send_replconf_listening_port(&mut master_stream, config.port) {
+                    println!("Failed to send REPLCONF listening-port to master: {}", e);
+                    return;
+                }
+                
+                // Send REPLCONF capa psync2
+                if let Err(e) = send_replconf_capa_psync2(&mut master_stream) {
+                    println!("Failed to send REPLCONF capa psync2 to master: {}", e);
+                    return;
                 }
             }
             Err(e) => {
