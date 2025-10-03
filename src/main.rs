@@ -433,6 +433,21 @@ fn send_replconf_capa_psync2(stream: &mut TcpStream) -> Result<(), std::io::Erro
     Ok(())
 }
 
+fn send_psync_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send PSYNC ? -1 as RESP array
+    // *3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n
+    let command = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+    stream.write_all(command)?;
+    
+    // Read response (should be +FULLRESYNC <REPL_ID> 0\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    // We can ignore the response for now as per the requirements
+    
+    println!("Sent PSYNC to master");
+    Ok(())
+}
+
 fn main() {
     let config = parse_args();
     
@@ -455,6 +470,12 @@ fn main() {
                 // Send REPLCONF capa psync2
                 if let Err(e) = send_replconf_capa_psync2(&mut master_stream) {
                     println!("Failed to send REPLCONF capa psync2 to master: {}", e);
+                    return;
+                }
+                
+                // Send PSYNC
+                if let Err(e) = send_psync_to_master(&mut master_stream) {
+                    println!("Failed to send PSYNC to master: {}", e);
                     return;
                 }
             }
