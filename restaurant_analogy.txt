@@ -468,6 +468,22 @@ fn send_replconf_capa_psync2(stream: &mut TcpStream) -> Result<(), std::io::Erro
     Ok(())
 }
 
+// 🔄 Full synchronization request: Ask headquarters for complete menu and order synchronization
+fn send_psync_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send synchronization request: PSYNC ? -1 (? = "I'm new, don't have previous sync ID", -1 = "start from beginning")
+    // Format: *3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n
+    let command = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+    stream.write_all(command)?;
+    
+    // Read headquarters response (should be +FULLRESYNC <REPL_ID> 0\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    // Response processing will be handled in future restaurant upgrades
+    
+    println!("Requested full menu synchronization from headquarters");
+    Ok(())
+}
+
 // Main restaurant operations
 fn main() {
     // Read management instructions and set up restaurant configuration
@@ -492,6 +508,12 @@ fn main() {
                 // Step 3: Report franchise capabilities
                 if let Err(e) = send_replconf_capa_psync2(&mut master_stream) {
                     println!("Failed to report capabilities to headquarters: {}", e);
+                    return;
+                }
+                
+                // Step 4: Request full menu synchronization
+                if let Err(e) = send_psync_to_master(&mut master_stream) {
+                    println!("Failed to request menu synchronization from headquarters: {}", e);
                     return;
                 }
             }
@@ -807,9 +829,12 @@ fn main() {
 - **Step 1**: `send_ping_to_master()` makes formal opening check-in call
 - **Step 2**: `send_replconf_listening_port()` registers franchise location address
 - **Step 3**: `send_replconf_capa_psync2()` reports franchise service capabilities
+- **Step 4**: `send_psync_to_master()` requests complete menu synchronization from headquarters
 - Each step waits for headquarters OK confirmation before proceeding
 - Headquarters acknowledges each step to confirm successful registration
+- PSYNC command uses ? -1 format meaning "I'm new, sync me from the beginning"
+- Headquarters responds with FULLRESYNC and starts sending complete menu data
 - Uses proper restaurant protocol throughout the entire process
-- Like a new franchise calling corporate: "Hello, we're at 123 Main St, and we offer psync2 services!"
+- Like a new franchise calling corporate: "Hello, we're at 123 Main St, we offer psync2 services, and please send us your complete menu!"
 
 This restaurant system provides excellent customer service with proper franchise management support, automatic headquarters check-in, recipe persistence, and multi-customer handling capabilities!

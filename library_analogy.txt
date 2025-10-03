@@ -478,6 +478,22 @@ fn send_replconf_capa_psync2(stream: &mut TcpStream) -> Result<(), std::io::Erro
     Ok(())
 }
 
+// 📚 Full catalog synchronization: Request complete collection sync from master library
+fn send_psync_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
+    // Send synchronization request: PSYNC ? -1 (? = "I'm a new branch, no previous sync ID", -1 = "start from beginning")
+    // Format: *3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n
+    let command = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
+    stream.write_all(command)?;
+    
+    // Read master's response (should be +FULLRESYNC <REPL_ID> 0\r\n)
+    let mut buffer = [0; 1024];
+    let _n = stream.read(&mut buffer)?;
+    // Response processing will be implemented in future library system updates
+    
+    println!("Requested complete catalog synchronization from master library");
+    Ok(())
+}
+
 fn main() {
     // 📋 Read administrative instructions and set up library configuration
     let config = parse_args();
@@ -501,6 +517,12 @@ fn main() {
                 // Step 3: Announce branch capabilities
                 if let Err(e) = send_replconf_capa_psync2(&mut master_stream) {
                     println!("Failed to announce branch capabilities to master library: {}", e);
+                    return;
+                }
+                
+                // Step 4: Request complete catalog synchronization
+                if let Err(e) = send_psync_to_master(&mut master_stream) {
+                    println!("Failed to request catalog synchronization from master library: {}", e);
                     return;
                 }
             }
@@ -829,9 +851,12 @@ fn main() {
    - **Step 1**: `send_ping_to_master()` sends formal greeting: PING command as RESP format
    - **Step 2**: `send_replconf_listening_port()` registers branch address with master
    - **Step 3**: `send_replconf_capa_psync2()` announces branch capabilities
+   - **Step 4**: `send_psync_to_master()` requests complete catalog synchronization from master
    - Each step waits for master's OK response before proceeding
    - Master library responds to each step to acknowledge the new branch
+   - PSYNC command uses ? -1 format meaning "I'm a new branch, sync me from the beginning"
+   - Master responds with FULLRESYNC and begins sending complete catalog data
    - Complete handshake uses proper library protocol throughout
-   - Like a new branch calling headquarters: "Hello, we're at address 6380, and we support psync2 synchronization!"
+   - Like a new branch calling headquarters: "Hello, we're at address 6380, we support psync2 synchronization, and please send us your complete catalog!"
 
 The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, provide status information, and respond appropriately to all visitor needs!
