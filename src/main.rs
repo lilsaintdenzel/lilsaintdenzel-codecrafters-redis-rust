@@ -633,6 +633,11 @@ fn main() {
                                                     stream.write_all(b"*0\r\n").unwrap();
                                                 }
                                             }
+                                            "REPLCONF" => {
+                                                // For the purposes of this challenge, we can safely ignore 
+                                                // the arguments and simply respond with +OK\r\n
+                                                stream.write_all(b"+OK\r\n").unwrap();
+                                            }
                                             "INFO" => {
                                                 if args.len() >= 2 && args[1].to_lowercase() == "replication" {
                                                     let role = if config_clone.replicaof.is_some() {
