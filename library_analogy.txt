@@ -717,6 +717,13 @@ fn main() {
                                                     stream.write_all(b"*0\r\n").unwrap();
                                                 }
                                             }
+                                            "REPLCONF" => {
+                                                // 📋 Branch coordination: Handle messages from replica libraries
+                                                // When a branch library sends status reports to the main library,
+                                                // the main library needs to acknowledge receipt properly
+                                                // This includes branch address registrations and capability announcements
+                                                stream.write_all(b"+OK\r\n").unwrap(); // "Message received and acknowledged"
+                                            }
                                             "INFO" => {
                                                 // 📊 Visitor wants to know about the library's status: "INFO replication"
                                                 if args.len() >= 2 && args[1].to_lowercase() == "replication" {
@@ -859,4 +866,13 @@ fn main() {
    - Complete handshake uses proper library protocol throughout
    - Like a new branch calling headquarters: "Hello, we're at address 6380, we support psync2 synchronization, and please send us your complete catalog!"
 
-The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches, provide status information, and respond appropriately to all visitor needs!
+15. **Master Branch Coordination Handling** - like headquarters managing branch reports:
+   - Main libraries (masters) must handle messages from their branch libraries
+   - When branch libraries send REPLCONF status reports, master acknowledges with +OK
+   - Handles both "listening-port" address registrations and "capa" capability announcements
+   - Like headquarters saying "Got your message, branch registered!" to each branch report
+   - Ensures smooth two-way communication in the library network
+   - Master library stays informed about all branch locations and their capabilities
+   - **REPLCONF** command: Branch coordination messages → "Message received and acknowledged" (branch management communication)
+
+The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, provide status information, and respond appropriately to all visitor needs!

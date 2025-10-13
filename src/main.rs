@@ -638,6 +638,13 @@ fn main() {
                                                 // the arguments and simply respond with +OK\r\n
                                                 stream.write_all(b"+OK\r\n").unwrap();
                                             }
+                                            "PSYNC" => {
+                                                if args.len() >= 3 && args[1] == "?" && args[2] == "-1" {
+                                                    // Respond with FULLRESYNC <REPL_ID> 0
+                                                    let response = "+FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0\r\n";
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
                                             "INFO" => {
                                                 if args.len() >= 2 && args[1].to_lowercase() == "replication" {
                                                     let role = if config_clone.replicaof.is_some() {

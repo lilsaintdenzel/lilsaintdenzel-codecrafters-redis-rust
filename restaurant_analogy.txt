@@ -701,6 +701,13 @@ fn main() {
                                                     stream.write_all(b"*0\r\n").unwrap();
                                                 }
                                             }
+                                            "REPLCONF" => {
+                                                // Franchise coordination: Handle headquarters messages
+                                                // When a franchise restaurant sends status reports to headquarters,
+                                                // headquarters (our restaurant) needs to acknowledge properly
+                                                // This includes location reports and capability announcements
+                                                stream.write_all(b"+OK\r\n").unwrap(); // "Message received and acknowledged"
+                                            }
                                             "INFO" => {
                                                 // Customer asking about restaurant status: "INFO replication"
                                                 if args.len() >= 2 && args[1].to_lowercase() == "replication" {
@@ -798,6 +805,7 @@ fn main() {
 - **CONFIG GET**: Questions about restaurant setup and kitchen location
 - **KEYS**: "What's on the menu?" with search capabilities
 - **INFO**: Restaurant status, type, and tracking information
+- **REPLCONF**: Franchise coordination messages → "Message received and acknowledged" (headquarters communication)
 
 **7. Restaurant Setup System (Configuration)**
 - Management can specify kitchen storage location, recipe book names
@@ -837,4 +845,12 @@ fn main() {
 - Uses proper restaurant protocol throughout the entire process
 - Like a new franchise calling corporate: "Hello, we're at 123 Main St, we offer psync2 services, and please send us your complete menu!"
 
-This restaurant system provides excellent customer service with proper franchise management support, automatic headquarters check-in, recipe persistence, and multi-customer handling capabilities!
+**12. Headquarters Communication Handling (Master REPLCONF)**
+- Independent restaurants (headquarters) must handle messages from their franchises
+- When franchise restaurants send REPLCONF status reports, headquarters acknowledges with +OK
+- Handles both "listening-port" location reports and "capa" capability announcements
+- Like headquarters saying "Got your message, franchise registered!" to each franchise report
+- Ensures smooth two-way communication in the restaurant network
+- Headquarters stays informed about all franchise locations and their capabilities
+
+This restaurant system provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, recipe persistence, and multi-customer handling capabilities!
