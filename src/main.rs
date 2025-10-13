@@ -643,6 +643,13 @@ fn main() {
                                                     // Respond with FULLRESYNC <REPL_ID> 0
                                                     let response = "+FULLRESYNC 8371b4fb1155b71f4a04d3e1bc3e18c4a990aeeb 0\r\n";
                                                     stream.write_all(response.as_bytes()).unwrap();
+                                                    
+                                                    // Send empty RDB file
+                                                    let rdb_hex = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+                                                    let rdb_bytes = hex::decode(rdb_hex).unwrap();
+                                                    let rdb_response = format!("${}\r\n", rdb_bytes.len());
+                                                    stream.write_all(rdb_response.as_bytes()).unwrap();
+                                                    stream.write_all(&rdb_bytes).unwrap();
                                                 }
                                             }
                                             "INFO" => {
