@@ -474,6 +474,11 @@ fn send_psync_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
 fn main() {
     let config = parse_args();
     
+    // Initialize data store first
+    let initial_data = load_rdb_file(&config);
+    let data_store = Arc::new(Mutex::new(initial_data));
+    let replica_connections: ReplicaConnections = Arc::new(Mutex::new(Vec::new()));
+    
     // If this is a replica, connect to master and perform handshake
     if let Some((master_host, master_port)) = &config.replicaof {
         match connect_to_master(master_host, *master_port) {
@@ -501,6 +506,68 @@ fn main() {
                     println!("Failed to send PSYNC to master: {}", e);
                     return;
                 }
+                
+                // Keep listening for propagated commands from master
+                let store_for_replication = Arc::clone(&data_store);
+                thread::spawn(move || {
+                    let mut buffer = [0; 1024];
+                    loop {
+                        match master_stream.read(&mut buffer) {
+                            Ok(0) => {
+                                println!("Master connection closed");
+                                break;
+                            }
+                            Ok(n) => {
+                                // Process propagated commands from master
+                                if let Some(args) = parse_redis_command(&buffer, n) {
+                                    if !args.is_empty() {
+                                        let command = args[0].to_uppercase();
+                                        match command.as_str() {
+                                            "SET" => {
+                                                // Process SET command silently (no response to master)
+                                                if args.len() >= 3 {
+                                                    let key = &args[1];
+                                                    let value = &args[2];
+                                                    let mut expires_at = None;
+                                                    
+                                                    // Check for expiration options (PX milliseconds)
+                                                    if args.len() >= 5 {
+                                                        let option = args[3].to_uppercase();
+                                                        if option == "PX" {
+                                                            if let Ok(ms) = args[4].parse::<u128>() {
+                                                                let now = SystemTime::now()
+                                                                    .duration_since(UNIX_EPOCH)
+                                                                    .unwrap()
+                                                                    .as_millis();
+                                                                expires_at = Some(now + ms);
+                                                            }
+                                                        }
+                                                    }
+                                                    
+                                                    let stored_value = StoredValue {
+                                                        value: value.clone(),
+                                                        expires_at,
+                                                    };
+                                                    
+                                                    let mut store = store_for_replication.lock().unwrap();
+                                                    store.insert(key.clone(), stored_value);
+                                                    // Note: No response sent to master for propagated commands
+                                                }
+                                            }
+                                            _ => {
+                                                // Ignore other commands or handle as needed
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                println!("Error reading from master: {}", e);
+                                break;
+                            }
+                        }
+                    }
+                });
             }
             Err(e) => {
                 println!("Failed to connect to master: {}", e);
@@ -510,9 +577,6 @@ fn main() {
     
     let bind_address = format!("127.0.0.1:{}", config.port);
     let listener = TcpListener::bind(&bind_address).unwrap();
-    let initial_data = load_rdb_file(&config);
-    let data_store = Arc::new(Mutex::new(initial_data));
-    let replica_connections: ReplicaConnections = Arc::new(Mutex::new(Vec::new()));
 
     for stream in listener.incoming() {
         match stream {
