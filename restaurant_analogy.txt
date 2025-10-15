@@ -853,4 +853,25 @@ fn main() {
 - Ensures smooth two-way communication in the restaurant network
 - Headquarters stays informed about all franchise locations and their capabilities
 
-This restaurant system provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, recipe persistence, and multi-customer handling capabilities!
+**13. Real-Time Menu Updates (Command Propagation)**
+- After PSYNC handshake completion, headquarters maintains active connections to all franchises
+- When customers place orders at headquarters (SET commands), these orders are immediately shared with all franchises
+- `propagate_command_to_replicas()` formats orders as standard restaurant messages and sends to all franchise locations
+- Example: Customer orders "SET burger well-done" at headquarters → all franchises receive "*3\r\n$3\r\nSET\r\n$6\r\nburger\r\n$9\r\nwell-done\r\n"
+- Only write commands (like SET) are propagated - read commands (like GET, PING) are handled locally at each location
+- Franchise restaurants receive and process propagated orders silently (no response back to headquarters)
+- Automatic cleanup: disconnected franchises are removed from the propagation list
+- Uses the same communication channel established during initial franchise registration
+- Like a headquarters calling all franchises: "Customer just ordered item X with special instructions Y - update your systems!"
+- Ensures all restaurant locations stay synchronized with the same menu and order information
+
+**14. Enhanced Franchise Tracking (Replica Connection Management)**
+- `ReplicaConnections` type tracks all active franchise communication channels
+- After PSYNC handshake, franchise connections are stored for ongoing communication
+- `stream.try_clone()` creates dedicated communication channel for each franchise
+- Propagation happens immediately after processing orders at headquarters (before confirming to customer)
+- Error handling: franchises that disconnect are automatically removed from updates
+- Thread-safe coordination ensures multiple customers can place orders simultaneously without conflicts
+- Like maintaining a phone directory of all franchises for instant communication
+
+This restaurant system provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, recipe persistence, and multi-customer handling capabilities!

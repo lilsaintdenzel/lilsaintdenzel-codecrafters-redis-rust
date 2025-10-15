@@ -875,4 +875,25 @@ fn main() {
    - Master library stays informed about all branch locations and their capabilities
    - **REPLCONF** command: Branch coordination messages → "Message received and acknowledged" (branch management communication)
 
-The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, provide status information, and respond appropriately to all visitor needs!
+16. **Real-Time Collection Updates (Command Propagation)** - like instant catalog synchronization:
+   - After PSYNC handshake completion, main library maintains active connections to all branch libraries
+   - When visitors add items to the main library's collection (SET commands), these updates are immediately shared with all branches
+   - `propagate_command_to_replicas()` formats collection updates as standard library messages and sends to all branch locations
+   - Example: Visitor adds "SET book-title content" at main library → all branches receive "*3\r\n$3\r\nSET\r\n$10\r\nbook-title\r\n$7\r\ncontent\r\n"
+   - Only write operations (like SET) are propagated - read operations (like GET, PING) are handled locally at each branch
+   - Branch libraries receive and process propagated updates silently (no response back to main library)
+   - Automatic maintenance: disconnected branches are removed from the propagation list
+   - Uses the same communication channel established during initial branch registration
+   - Like main library calling all branches: "New item just added to collection - update your catalogs!"
+   - Ensures all library locations stay synchronized with the same collection information
+
+17. **Enhanced Branch Connection Management (Replica Connection Tracking)** - like maintaining branch communication directory:
+   - `ReplicaConnections` type tracks all active branch communication channels
+   - After PSYNC handshake, branch connections are stored for ongoing communication
+   - `stream.try_clone()` creates dedicated communication channel for each branch
+   - Propagation happens immediately after processing collection updates at main library (before confirming to visitor)
+   - Error handling: branches that disconnect are automatically removed from updates
+   - Thread-safe coordination ensures multiple visitors can add items simultaneously without conflicts
+   - Like maintaining a phone directory of all branches for instant catalog updates
+
+The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination and real-time collection synchronization, provide status information, and respond appropriately to all visitor needs!
