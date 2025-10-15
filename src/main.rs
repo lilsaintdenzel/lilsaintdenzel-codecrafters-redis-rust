@@ -23,6 +23,29 @@ struct Config {
     replicaof: Option<(String, u16)>, // (host, port) if this is a replica
 }
 
+type ReplicaConnections = Arc<Mutex<Vec<TcpStream>>>;
+
+fn propagate_command_to_replicas(replicas: &ReplicaConnections, command: &[String]) {
+    let mut replicas_guard = replicas.lock().unwrap();
+    let mut active_replicas = Vec::new();
+    
+    // Format command as RESP array
+    let mut resp_command = format!("*{}\r\n", command.len());
+    for arg in command {
+        resp_command.push_str(&format!("${}\r\n{}\r\n", arg.len(), arg));
+    }
+    
+    // Send to all replicas and filter out disconnected ones
+    for mut replica in replicas_guard.drain(..) {
+        if replica.write_all(resp_command.as_bytes()).is_ok() {
+            active_replicas.push(replica);
+        }
+    }
+    
+    // Keep only active replicas
+    *replicas_guard = active_replicas;
+}
+
 fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     let data = String::from_utf8_lossy(&buffer[..n]);
     let lines: Vec<&str> = data.split("\r\n").collect();
@@ -489,11 +512,13 @@ fn main() {
     let listener = TcpListener::bind(&bind_address).unwrap();
     let initial_data = load_rdb_file(&config);
     let data_store = Arc::new(Mutex::new(initial_data));
+    let replica_connections: ReplicaConnections = Arc::new(Mutex::new(Vec::new()));
 
     for stream in listener.incoming() {
         match stream {
             Ok(mut stream) => {
                 let store_clone = Arc::clone(&data_store);
+                let replicas_clone = Arc::clone(&replica_connections);
                 let config_clone = config.clone();
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
@@ -542,7 +567,14 @@ fn main() {
                                                     
                                                     let mut store = store_clone.lock().unwrap();
                                                     store.insert(key.clone(), stored_value);
+                                                    drop(store); // Release lock before propagating
+                                                    
                                                     stream.write_all(b"+OK\r\n").unwrap();
+                                                    
+                                                    // Propagate SET command to replicas (only if this is a master)
+                                                    if config_clone.replicaof.is_none() {
+                                                        propagate_command_to_replicas(&replicas_clone, &args);
+                                                    }
                                                 }
                                             }
                                             "GET" => {
@@ -650,6 +682,12 @@ fn main() {
                                                     let rdb_response = format!("${}\r\n", rdb_bytes.len());
                                                     stream.write_all(rdb_response.as_bytes()).unwrap();
                                                     stream.write_all(&rdb_bytes).unwrap();
+                                                    
+                                                    // Add this stream as a replica connection for command propagation
+                                                    if let Ok(stream_clone) = stream.try_clone() {
+                                                        let mut replicas = replicas_clone.lock().unwrap();
+                                                        replicas.push(stream_clone);
+                                                    }
                                                 }
                                             }
                                             "INFO" => {
