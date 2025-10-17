@@ -554,6 +554,17 @@ fn main() {
                                                     // Note: No response sent to master for propagated commands
                                                 }
                                             }
+                                            "REPLCONF" => {
+                                                // Handle REPLCONF GETACK command
+                                                if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
+                                                    // Respond with REPLCONF ACK 0
+                                                    let response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
+                                                    if let Err(e) = master_stream.write_all(response) {
+                                                        println!("Failed to send REPLCONF ACK to master: {}", e);
+                                                        break;
+                                                    }
+                                                }
+                                            }
                                             _ => {
                                                 // Ignore other commands or handle as needed
                                             }

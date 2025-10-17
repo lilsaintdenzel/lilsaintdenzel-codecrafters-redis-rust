@@ -874,4 +874,16 @@ fn main() {
 - Thread-safe coordination ensures multiple customers can place orders simultaneously without conflicts
 - Like maintaining a phone directory of all franchises for instant communication
 
-This restaurant system provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, recipe persistence, and multi-customer handling capabilities!
+**15. Franchise Status Check System (REPLCONF GETACK)**
+- Headquarters can check if franchises are still in sync and processing orders properly
+- Headquarters sends "REPLCONF GETACK *" to any franchise (meaning "How many orders have you processed?")
+- Franchises immediately respond with "REPLCONF ACK 0" (meaning "I've processed 0 bytes of orders so far")
+- Like headquarters calling a franchise: "Are you keeping up with the orders?" → "Yes, I'm at order count 0"
+- Uses proper restaurant protocol format: `*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n`
+- Franchises handle these status checks without disturbing normal customer service
+- Allows headquarters to verify that franchises haven't fallen behind on order processing
+- Currently reports offset 0 (starting point), will track actual order processing in future updates
+- Only GETACK requests get responses - other propagated commands (SET, PING) are processed silently
+- Essential for maintaining quality control across the restaurant franchise network
+
+This restaurant system provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, recipe persistence, and multi-customer handling capabilities!
