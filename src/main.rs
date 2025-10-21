@@ -511,6 +511,7 @@ fn main() {
                 let store_for_replication = Arc::clone(&data_store);
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
+                    let mut replica_offset = 0u64;
                     loop {
                         match master_stream.read(&mut buffer) {
                             Ok(0) => {
@@ -522,6 +523,11 @@ fn main() {
                                 if let Some(args) = parse_redis_command(&buffer, n) {
                                     if !args.is_empty() {
                                         let command = args[0].to_uppercase();
+                                        
+                                        // Calculate the byte size of this RESP command for offset tracking
+                                        let command_bytes = &buffer[..n];
+                                        let command_size = command_bytes.len() as u64;
+                                        
                                         match command.as_str() {
                                             "SET" => {
                                                 // Process SET command silently (no response to master)
@@ -553,20 +559,30 @@ fn main() {
                                                     store.insert(key.clone(), stored_value);
                                                     // Note: No response sent to master for propagated commands
                                                 }
+                                                // Add command size to offset
+                                                replica_offset += command_size;
                                             }
                                             "REPLCONF" => {
                                                 // Handle REPLCONF GETACK command
                                                 if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
-                                                    // Respond with REPLCONF ACK 0
-                                                    let response = b"*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n";
-                                                    if let Err(e) = master_stream.write_all(response) {
+                                                    // Respond with REPLCONF ACK <current_offset>
+                                                    let offset_str = replica_offset.to_string();
+                                                    let response = format!(
+                                                        "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
+                                                        offset_str.len(),
+                                                        offset_str
+                                                    );
+                                                    if let Err(e) = master_stream.write_all(response.as_bytes()) {
                                                         println!("Failed to send REPLCONF ACK to master: {}", e);
                                                         break;
                                                     }
+                                                    // Add the current REPLCONF GETACK command size to offset for next time
+                                                    replica_offset += command_size;
                                                 }
                                             }
                                             _ => {
-                                                // Ignore other commands or handle as needed
+                                                // For other commands (like PING), just add to offset
+                                                replica_offset += command_size;
                                             }
                                         }
                                     }
