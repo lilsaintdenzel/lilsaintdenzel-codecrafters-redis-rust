@@ -874,16 +874,28 @@ fn main() {
 - Thread-safe coordination ensures multiple customers can place orders simultaneously without conflicts
 - Like maintaining a phone directory of all franchises for instant communication
 
-**15. Franchise Status Check System (REPLCONF GETACK)**
-- Headquarters can check if franchises are still in sync and processing orders properly
+**15. Franchise Order Tracking System (REPLCONF GETACK with Offset)**
+- Headquarters can check if franchises are keeping up with order processing and staying in sync
+- Each franchise maintains a detailed "order counter" tracking the total size of all processed communications
 - Headquarters sends "REPLCONF GETACK *" to any franchise (meaning "How many orders have you processed?")
-- Franchises immediately respond with "REPLCONF ACK 0" (meaning "I've processed 0 bytes of orders so far")
-- Like headquarters calling a franchise: "Are you keeping up with the orders?" → "Yes, I'm at order count 0"
-- Uses proper restaurant protocol format: `*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n$1\r\n0\r\n`
-- Franchises handle these status checks without disturbing normal customer service
-- Allows headquarters to verify that franchises haven't fallen behind on order processing
-- Currently reports offset 0 (starting point), will track actual order processing in future updates
-- Only GETACK requests get responses - other propagated commands (SET, PING) are processed silently
-- Essential for maintaining quality control across the restaurant franchise network
+- Franchises respond with exact byte count: "REPLCONF ACK 146" (meaning "I've processed 146 bytes of orders and communications")
+- Order counting works like this:
+  - Franchise starts with counter at 0
+  - First GETACK arrives → franchise responds "ACK 0" then adds 37 bytes (size of that GETACK command)
+  - PING arrives → franchise silently processes it and adds 14 bytes to counter
+  - Next GETACK arrives → franchise responds "ACK 51" (37+14) then adds 37 more bytes
+  - SET commands arrive → franchise processes and adds their byte sizes too
+- Example sequence:
+  1. GETACK → responds with "0", counter becomes 37
+  2. PING (14 bytes) → counter becomes 51
+  3. GETACK → responds with "51", counter becomes 88
+  4. SET commands → counter keeps growing with each processed order
+- Like a franchise keeping precise records: "We've handled exactly 146 bytes worth of headquarters communications"
+- Counter includes ALL commands received from headquarters (GETACK, PING, SET, etc.)
+- BUT each response only includes commands processed BEFORE the current GETACK request
+- Uses dynamic response format: `*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${len}\r\n{offset}\r\n`
+- Critical for headquarters to verify franchises are processing all communications accurately
+- Helps detect if any franchise has missed orders or fallen behind
+- Ensures quality control and synchronization across the entire restaurant network
 
 This restaurant system provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, recipe persistence, and multi-customer handling capabilities!
