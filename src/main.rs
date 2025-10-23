@@ -522,6 +522,7 @@ fn main() {
                                 break;
                             }
                             Ok(n) => {
+                                println!("Received {} bytes from master", n);
                                 // First, we need to consume the RDB file if we haven't already
                                 if !rdb_consumed {
                                     let data = String::from_utf8_lossy(&buffer[..n]);
@@ -540,6 +541,8 @@ fn main() {
                                 
                                 // Calculate the byte size of this RESP command for offset tracking
                                 let command_size = n as u64;
+                                
+                                println!("Processing command data: {:?}", String::from_utf8_lossy(&buffer[..std::cmp::min(50, n)]));
                                 
                                 // Process propagated commands from master
                                 if let Some(args) = parse_redis_command(&buffer, n) {
