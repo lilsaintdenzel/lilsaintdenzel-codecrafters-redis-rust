@@ -527,27 +527,11 @@ fn main() {
                                     // Check if this data contains the RDB file (starts with $)
                                     let data = String::from_utf8_lossy(&buffer[..n]);
                                     if data.starts_with('$') {
-                                        // This is the RDB file data, parse and consume it
-                                        if let Some(end_pos) = data.find("\r\n") {
-                                            if let Ok(rdb_length) = data[1..end_pos].parse::<usize>() {
-                                                let header_size = end_pos + 2;
-                                                let rdb_data_start = header_size;
-                                                let rdb_data_in_buffer = n - rdb_data_start;
-                                                
-                                                // Read remaining RDB data if needed
-                                                if rdb_data_in_buffer < rdb_length {
-                                                    let remaining = rdb_length - rdb_data_in_buffer;
-                                                    let mut rdb_buffer = vec![0u8; remaining];
-                                                    if let Ok(_) = master_stream.read_exact(&mut rdb_buffer) {
-                                                        // RDB consumed successfully
-                                                    }
-                                                }
-                                                rdb_consumed = true;
-                                                continue; // Skip this iteration, start fresh for commands
-                                            }
-                                        }
+                                        // This is the RDB file - skip it entirely and mark as consumed
+                                        rdb_consumed = true;
+                                        continue; // Skip this data and read the next command
                                     }
-                                    // If we can't parse as RDB, treat as command and continue
+                                    // If it doesn't start with $, it's a command, so mark RDB as consumed
                                     rdb_consumed = true;
                                 }
                                 
