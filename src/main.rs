@@ -566,6 +566,7 @@ fn main() {
                                                 // Handle REPLCONF GETACK command
                                                 if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
                                                     // Respond with REPLCONF ACK <current_offset>
+                                                    // The offset should only include commands processed BEFORE this GETACK request
                                                     let offset_str = replica_offset.to_string();
                                                     let response = format!(
                                                         "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",

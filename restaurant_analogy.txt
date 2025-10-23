@@ -879,6 +879,8 @@ fn main() {
 - Each franchise maintains a detailed "order counter" tracking the total size of all processed communications
 - Headquarters sends "REPLCONF GETACK *" to any franchise (meaning "How many orders have you processed?")
 - Franchises respond with exact byte count: "REPLCONF ACK 146" (meaning "I've processed 146 bytes of orders and communications")
+
+**Detailed Order Counting Process:**
 - Order counting works like this:
   - Franchise starts with counter at 0
   - First GETACK arrives → franchise responds "ACK 0" then adds 37 bytes (size of that GETACK command)
@@ -890,6 +892,8 @@ fn main() {
   2. PING (14 bytes) → counter becomes 51
   3. GETACK → responds with "51", counter becomes 88
   4. SET commands → counter keeps growing with each processed order
+
+**Key Implementation Features:**
 - Like a franchise keeping precise records: "We've handled exactly 146 bytes worth of headquarters communications"
 - Counter includes ALL commands received from headquarters (GETACK, PING, SET, etc.)
 - BUT each response only includes commands processed BEFORE the current GETACK request
@@ -897,5 +901,16 @@ fn main() {
 - Critical for headquarters to verify franchises are processing all communications accurately
 - Helps detect if any franchise has missed orders or fallen behind
 - Ensures quality control and synchronization across the entire restaurant network
+
+**Franchise Communication Handling Implementation:**
+- Franchise restaurants maintain dedicated thread for headquarters communication
+- `replica_offset` variable tracks total bytes processed from headquarters
+- For each headquarters message:
+  1. Calculate command byte size using `command_bytes.len()`
+  2. Process the command (SET orders, PING health checks, GETACK audits)
+  3. Add command size to running offset total
+- GETACK responses use current offset (commands processed BEFORE this audit)
+- After sending GETACK response, add the audit command size to offset
+- Separate handling for different command types (SET updates menu, PING confirms connection, GETACK provides audit)
 
 This restaurant system provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, recipe persistence, and multi-customer handling capabilities!

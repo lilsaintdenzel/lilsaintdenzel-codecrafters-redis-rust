@@ -901,6 +901,8 @@ fn main() {
    - Each branch maintains a precise "processing counter" tracking the total size of all processed communications
    - Main library sends "REPLCONF GETACK *" to any branch (meaning "How many communications have you processed?")
    - Branch libraries respond with exact byte count: "REPLCONF ACK 146" (meaning "I've processed 146 bytes of communications and updates")
+
+**Detailed Processing Tracking Implementation:**
    - Processing tracking works like this:
      - Branch starts with counter at 0
      - First GETACK arrives → branch responds "ACK 0" then adds 37 bytes (size of that GETACK message)
@@ -912,6 +914,8 @@ fn main() {
      2. Status ping (14 bytes) → counter becomes 51
      3. GETACK → responds with "51", counter becomes 88
      4. Catalog updates → counter keeps growing with each processed communication
+
+**Key Implementation Features:**
    - Like a branch keeping detailed records: "We've handled exactly 146 bytes worth of headquarters communications"
    - Counter includes ALL messages received from main library (GETACK, pings, catalog updates, etc.)
    - BUT each response only includes communications processed BEFORE the current GETACK request
@@ -919,5 +923,16 @@ fn main() {
    - Critical for main library to verify branches are processing all communications accurately
    - Helps detect if any branch has missed updates or fallen behind
    - Ensures quality control and synchronization across the entire library network
+
+**Branch Communication Handler Implementation:**
+   - Branch libraries maintain dedicated thread for main library communication
+   - `replica_offset` variable tracks total bytes processed from main library
+   - For each main library message:
+     1. Calculate message byte size using `command_bytes.len()`
+     2. Process the message (catalog updates, status pings, audit requests)
+     3. Add message size to running offset total
+   - GETACK responses use current offset (messages processed BEFORE this audit)
+   - After sending GETACK response, add the audit message size to offset
+   - Separate handling for different message types (SET updates catalog, PING confirms connection, GETACK provides audit)
 
 The library is now much smarter - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, real-time collection synchronization, branch status monitoring, provide status information, and respond appropriately to all visitor needs!
