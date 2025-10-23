@@ -529,8 +529,57 @@ fn main() {
                                     println!("RDB consumption check: data starts with: {:?}, length: {}", 
                                         &data[..std::cmp::min(20, data.len())], n);
                                     if data.starts_with('$') {
-                                        // This is RDB data - mark as consumed and skip
-                                        println!("Consuming RDB data, skipping buffer");
+                                        // This buffer contains RDB data - check if there's a command after it
+                                        if let Some(first_crlf) = data.find("\r\n") {
+                                            let length_line = &data[1..first_crlf]; // Skip the '$'
+                                            if let Ok(rdb_length) = length_line.parse::<usize>() {
+                                                let rdb_start = first_crlf + 2; // After \r\n
+                                                let rdb_end = rdb_start + rdb_length;
+                                                
+                                                println!("RDB parsing: length={}, start={}, end={}, total_buffer={}", 
+                                                    rdb_length, rdb_start, rdb_end, n);
+                                                
+                                                // Check if there's command data after the RDB
+                                                if rdb_end < n {
+                                                    // There's data after RDB - process it as a command
+                                                    rdb_consumed = true;
+                                                    let remaining_data = &buffer[rdb_end..n];
+                                                    let remaining_size = n - rdb_end;
+                                                    
+                                                    println!("Found {} bytes after RDB: {:?}", 
+                                                        remaining_size, String::from_utf8_lossy(remaining_data));
+                                                    
+                                                    // Process the command that follows RDB
+                                                    if let Some(args) = parse_redis_command(remaining_data, remaining_size) {
+                                                        println!("Parsed command after RDB: {:?}", args);
+                                                        if !args.is_empty() && args[0].to_uppercase() == "REPLCONF" {
+                                                            if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
+                                                                let offset_str = replica_offset.to_string();
+                                                                let response = format!(
+                                                                    "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
+                                                                    offset_str.len(),
+                                                                    offset_str
+                                                                );
+                                                                println!("Sending REPLCONF ACK response: {}", response.trim());
+                                                                if let Err(e) = master_stream.write_all(response.as_bytes()) {
+                                                                    println!("Failed to send REPLCONF ACK to master: {}", e);
+                                                                    break;
+                                                                }
+                                                                replica_offset += remaining_size as u64;
+                                                                continue; // Skip normal processing since we handled it here
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    // Only RDB data in this buffer, no command follows
+                                                    println!("Only RDB data in buffer, no command follows");
+                                                    rdb_consumed = true;
+                                                    continue;
+                                                }
+                                            }
+                                        }
+                                        // If we can't parse RDB properly, treat as simple RDB skip
+                                        println!("Could not parse RDB structure, treating as simple skip");
                                         rdb_consumed = true;
                                         continue;
                                     }
