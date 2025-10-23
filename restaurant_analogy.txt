@@ -2,6 +2,13 @@ Redis Server Implementation - Restaurant Analogy Explanation
 
 This Redis server works like a smart restaurant system that can handle multiple customers simultaneously and remember their orders even after closing!
 
+**NEW: Franchise Order Tracking System**
+The restaurant now features advanced franchise tracking! When operating as a franchise location, the restaurant:
+- Connects to headquarters and receives training materials (RDB file)
+- Tracks every single instruction received from headquarters with precise byte counting
+- Responds to headquarters' "How much have you processed?" (REPLCONF GETACK) with exact progress reports
+- Maintains perfect synchronization by counting all communication bytes, not just food orders
+
 === COMPLETE CODE WITH RESTAURANT ANALOGIES ===
 
 ```rust
