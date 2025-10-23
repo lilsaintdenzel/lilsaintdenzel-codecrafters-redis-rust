@@ -546,14 +546,13 @@ fn main() {
                                 break;
                             }
                             Ok(n) => {
+                                // Calculate the byte size of this RESP command for offset tracking
+                                let command_size = n as u64;
+                                
                                 // Process propagated commands from master
                                 if let Some(args) = parse_redis_command(&buffer, n) {
                                     if !args.is_empty() {
                                         let command = args[0].to_uppercase();
-                                        
-                                        // Calculate the byte size of this RESP command for offset tracking
-                                        let command_bytes = &buffer[..n];
-                                        let command_size = command_bytes.len() as u64;
                                         
                                         match command.as_str() {
                                             "SET" => {
@@ -614,6 +613,9 @@ fn main() {
                                             }
                                         }
                                     }
+                                } else {
+                                    // Even if we can't parse the command, we still need to count the bytes for offset tracking
+                                    replica_offset += command_size;
                                 }
                             }
                             Err(e) => {
