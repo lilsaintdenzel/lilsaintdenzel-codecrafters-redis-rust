@@ -464,35 +464,9 @@ fn send_psync_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
     
     // Read response (should be +FULLRESYNC <REPL_ID> 0\r\n)
     let mut buffer = [0; 1024];
-    let n = stream.read(&mut buffer)?;
-    
-    // Parse the FULLRESYNC response to understand what's coming next
-    let response = String::from_utf8_lossy(&buffer[..n]);
-    if response.starts_with("+FULLRESYNC") {
-        // After FULLRESYNC, master sends RDB file as $<length>\r\n<data>
-        // Read the RDB file length indicator
-        let mut rdb_buffer = [0; 1024];
-        let rdb_n = stream.read(&mut rdb_buffer)?;
-        let rdb_header = String::from_utf8_lossy(&rdb_buffer[..rdb_n]);
-        
-        // Parse the RDB length from $<length>\r\n format
-        if rdb_header.starts_with('$') {
-            if let Some(end_pos) = rdb_header.find("\r\n") {
-                if let Ok(rdb_length) = rdb_header[1..end_pos].parse::<usize>() {
-                    // Calculate how much RDB data we already read after the header
-                    let header_end = end_pos + 2;
-                    let already_read = rdb_n - header_end;
-                    let remaining_bytes = rdb_length - already_read;
-                    
-                    // Read the remaining RDB data to consume it completely
-                    if remaining_bytes > 0 {
-                        let mut remaining_buffer = vec![0u8; remaining_bytes];
-                        stream.read_exact(&mut remaining_buffer)?;
-                    }
-                }
-            }
-        }
-    }
+    let _n = stream.read(&mut buffer)?;
+    // Note: We're not consuming the RDB file here anymore since it might be causing issues
+    // The replica thread will handle any remaining data in the stream
     
     println!("Sent PSYNC to master");
     Ok(())
@@ -539,6 +513,8 @@ fn main() {
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
                     let mut replica_offset = 0u64;
+                    let mut rdb_consumed = false;
+                    
                     loop {
                         match master_stream.read(&mut buffer) {
                             Ok(0) => {
@@ -546,6 +522,35 @@ fn main() {
                                 break;
                             }
                             Ok(n) => {
+                                // First, we need to consume the RDB file if we haven't already
+                                if !rdb_consumed {
+                                    // Check if this data contains the RDB file (starts with $)
+                                    let data = String::from_utf8_lossy(&buffer[..n]);
+                                    if data.starts_with('$') {
+                                        // This is the RDB file data, parse and consume it
+                                        if let Some(end_pos) = data.find("\r\n") {
+                                            if let Ok(rdb_length) = data[1..end_pos].parse::<usize>() {
+                                                let header_size = end_pos + 2;
+                                                let rdb_data_start = header_size;
+                                                let rdb_data_in_buffer = n - rdb_data_start;
+                                                
+                                                // Read remaining RDB data if needed
+                                                if rdb_data_in_buffer < rdb_length {
+                                                    let remaining = rdb_length - rdb_data_in_buffer;
+                                                    let mut rdb_buffer = vec![0u8; remaining];
+                                                    if let Ok(_) = master_stream.read_exact(&mut rdb_buffer) {
+                                                        // RDB consumed successfully
+                                                    }
+                                                }
+                                                rdb_consumed = true;
+                                                continue; // Skip this iteration, start fresh for commands
+                                            }
+                                        }
+                                    }
+                                    // If we can't parse as RDB, treat as command and continue
+                                    rdb_consumed = true;
+                                }
+                                
                                 // Calculate the byte size of this RESP command for offset tracking
                                 let command_size = n as u64;
                                 
