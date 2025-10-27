@@ -82,6 +82,36 @@ fn parse_redis_command(buffer: &[u8], n: usize) -> Option<Vec<String>> {
     Some(args)
 }
 
+fn calculate_resp_command_size(buffer: &[u8], n: usize) -> usize {
+    let data = String::from_utf8_lossy(&buffer[..n]);
+    let lines: Vec<&str> = data.split("\r\n").collect();
+    
+    if lines.is_empty() || !lines[0].starts_with('*') {
+        return n; // fallback to buffer size if can't parse
+    }
+    
+    if let Ok(array_len) = lines[0][1..].parse::<usize>() {
+        let mut total_size = lines[0].len() + 2; // *N\r\n
+        let mut line_idx = 1;
+        
+        for _ in 0..array_len {
+            if line_idx < lines.len() && lines[line_idx].starts_with('$') {
+                total_size += lines[line_idx].len() + 2; // $N\r\n
+                line_idx += 1;
+                
+                if line_idx < lines.len() {
+                    total_size += lines[line_idx].len() + 2; // arg\r\n
+                    line_idx += 1;
+                }
+            }
+        }
+        
+        total_size
+    } else {
+        n // fallback
+    }
+}
+
 fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     if *pos >= bytes.len() {
         return None;
@@ -516,6 +546,9 @@ fn main() {
                     let mut rdb_consumed = false;
                     
                     loop {
+                        // Clear buffer to avoid leftover data from previous reads
+                        buffer.fill(0);
+                        
                         match master_stream.read(&mut buffer) {
                             Ok(0) => {
                                 println!("Master connection closed");
@@ -554,7 +587,8 @@ fn main() {
                                                                     println!("Failed to send REPLCONF ACK to master: {}", e);
                                                                     break;
                                                                 }
-                                                                replica_offset += remaining_size as u64;
+                                                                let cmd_size = calculate_resp_command_size(remaining_data, remaining_size);
+                                                                replica_offset += cmd_size as u64;
                                                                 continue; // Skip normal processing since we handled it here
                                                             }
                                                         }
@@ -574,8 +608,8 @@ fn main() {
                                     rdb_consumed = true;
                                 }
                                 
-                                // Calculate the byte size of this RESP command for offset tracking
-                                let command_size = n as u64;
+                                // Calculate the actual byte size of this RESP command for offset tracking
+                                let command_size = calculate_resp_command_size(&buffer, n) as u64;
                                 
                                 // Process propagated commands from master
                                 if let Some(args) = parse_redis_command(&buffer, n) {
@@ -611,6 +645,7 @@ fn main() {
                                                     
                                                     let mut store = store_for_replication.lock().unwrap();
                                                     store.insert(key.clone(), stored_value);
+                                                    println!("Replica processed SET {} {}", key, value);
                                                     // Note: No response sent to master for propagated commands
                                                 }
                                                 // Add command size to offset
