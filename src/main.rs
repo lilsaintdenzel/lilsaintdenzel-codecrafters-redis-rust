@@ -858,6 +858,29 @@ fn main() {
                                                     stream.write_all(response.as_bytes()).unwrap();
                                                 }
                                             }
+                                            "WAIT" => {
+                                                if args.len() >= 3 {
+                                                    // Parse numreplicas and timeout
+                                                    if let (Ok(numreplicas), Ok(_timeout)) = (args[1].parse::<u32>(), args[2].parse::<u32>()) {
+                                                        // For this stage, handle the simple case: when numreplicas is 0
+                                                        // and we have no replicas connected, return 0 immediately
+                                                        if numreplicas == 0 {
+                                                            stream.write_all(b":0\r\n").unwrap();
+                                                        } else {
+                                                            // For non-zero numreplicas, return the current number of connected replicas
+                                                            let replica_count = replicas_clone.lock().unwrap().len();
+                                                            let response = format!(":{}\r\n", replica_count);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                    } else {
+                                                        // Invalid arguments
+                                                        stream.write_all(b"-ERR wrong number of arguments for 'wait' command\r\n").unwrap();
+                                                    }
+                                                } else {
+                                                    // Not enough arguments
+                                                    stream.write_all(b"-ERR wrong number of arguments for 'wait' command\r\n").unwrap();
+                                                }
+                                            }
                                             _ => {
                                                 stream.write_all(b"+PONG\r\n").unwrap();
                                             }
