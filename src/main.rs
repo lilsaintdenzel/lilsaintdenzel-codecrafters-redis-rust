@@ -546,9 +546,6 @@ fn main() {
                     let mut rdb_consumed = false;
                     
                     loop {
-                        // Clear buffer to avoid leftover data from previous reads
-                        buffer.fill(0);
-                        
                         match master_stream.read(&mut buffer) {
                             Ok(0) => {
                                 println!("Master connection closed");
@@ -587,8 +584,7 @@ fn main() {
                                                                     println!("Failed to send REPLCONF ACK to master: {}", e);
                                                                     break;
                                                                 }
-                                                                let cmd_size = calculate_resp_command_size(remaining_data, remaining_size);
-                                                                replica_offset += cmd_size as u64;
+                                                                replica_offset += remaining_size as u64;
                                                                 continue; // Skip normal processing since we handled it here
                                                             }
                                                         }
@@ -608,8 +604,9 @@ fn main() {
                                     rdb_consumed = true;
                                 }
                                 
-                                // Calculate the actual byte size of this RESP command for offset tracking
-                                let command_size = calculate_resp_command_size(&buffer, n) as u64;
+                                // For now, use the simpler approach of counting all bytes read
+                                // This will be refined in later stages when we need precise offset tracking
+                                let command_size = n as u64;
                                 
                                 // Process propagated commands from master
                                 if let Some(args) = parse_redis_command(&buffer, n) {
@@ -645,7 +642,6 @@ fn main() {
                                                     
                                                     let mut store = store_for_replication.lock().unwrap();
                                                     store.insert(key.clone(), stored_value);
-                                                    println!("Replica processed SET {} {}", key, value);
                                                     // Note: No response sent to master for propagated commands
                                                 }
                                                 // Add command size to offset
