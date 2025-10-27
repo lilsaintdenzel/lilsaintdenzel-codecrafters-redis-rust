@@ -112,20 +112,28 @@ fn calculate_resp_command_size(buffer: &[u8], n: usize) -> usize {
     }
 }
 
-fn parse_multiple_redis_commands(buffer: &[u8], n: usize) -> Vec<(Vec<String>, usize)> {
+fn parse_multiple_redis_commands(buffer: &[u8], n: usize) -> Vec<Vec<String>> {
     let mut commands = Vec::new();
-    let mut offset = 0;
+    let data = String::from_utf8_lossy(&buffer[..n]);
+    let mut pos = 0;
     
-    while offset < n {
-        let remaining = &buffer[offset..n];
-        let remaining_size = n - offset;
-        
-        if let Some(args) = parse_redis_command(remaining, remaining_size) {
-            let cmd_size = calculate_resp_command_size(remaining, remaining_size);
-            commands.push((args, cmd_size));
-            offset += cmd_size;
+    // Split by looking for command boundaries (*N\r\n pattern)
+    while pos < data.len() {
+        if let Some(star_pos) = data[pos..].find('*') {
+            let cmd_start = pos + star_pos;
+            if let Some(args) = parse_redis_command(&buffer[cmd_start..], n - cmd_start) {
+                commands.push(args);
+                
+                // Find the end of this command by looking for the next '*' or end of data
+                let mut search_pos = cmd_start + 1;
+                while search_pos < data.len() && !data[search_pos..].starts_with('*') {
+                    search_pos += 1;
+                }
+                pos = search_pos;
+            } else {
+                break;
+            }
         } else {
-            // If we can't parse a command, break to avoid infinite loop
             break;
         }
     }
@@ -629,11 +637,8 @@ fn main() {
                                 let commands = parse_multiple_redis_commands(&buffer, n);
                                 
                                 if commands.is_empty() {
-                                    // If we can't parse any commands, just add the buffer size to offset
-                                    replica_offset += n as u64;
-                                } else {
-                                    // Process each command found in the buffer
-                                    for (args, cmd_size) in commands {
+                                    // If we can't parse any commands, try with single command parser
+                                    if let Some(args) = parse_redis_command(&buffer, n) {
                                         if !args.is_empty() {
                                             let command = args[0].to_uppercase();
                                             
@@ -668,8 +673,6 @@ fn main() {
                                                         store.insert(key.clone(), stored_value);
                                                         // Note: No response sent to master for propagated commands
                                                     }
-                                                    // Add command size to offset
-                                                    replica_offset += cmd_size as u64;
                                                 }
                                                 "REPLCONF" => {
                                                     // Handle REPLCONF GETACK command
@@ -686,17 +689,79 @@ fn main() {
                                                             println!("Failed to send REPLCONF ACK to master: {}", e);
                                                             break;
                                                         }
-                                                        // Add the current REPLCONF GETACK command size to offset for next time
-                                                        replica_offset += cmd_size as u64;
                                                     }
                                                 }
                                                 _ => {
-                                                    // For other commands (like PING), just add to offset
-                                                    replica_offset += cmd_size as u64;
+                                                    // For other commands (like PING), just continue
                                                 }
                                             }
                                         }
                                     }
+                                    // Always add buffer size to offset
+                                    replica_offset += n as u64;
+                                } else {
+                                    // Process each command found in the buffer
+                                    for args in commands {
+                                        if !args.is_empty() {
+                                            let command = args[0].to_uppercase();
+                                            
+                                            match command.as_str() {
+                                                "SET" => {
+                                                    // Process SET command silently (no response to master)
+                                                    if args.len() >= 3 {
+                                                        let key = &args[1];
+                                                        let value = &args[2];
+                                                        let mut expires_at = None;
+                                                        
+                                                        // Check for expiration options (PX milliseconds)
+                                                        if args.len() >= 5 {
+                                                            let option = args[3].to_uppercase();
+                                                            if option == "PX" {
+                                                                if let Ok(ms) = args[4].parse::<u128>() {
+                                                                    let now = SystemTime::now()
+                                                                        .duration_since(UNIX_EPOCH)
+                                                                        .unwrap()
+                                                                        .as_millis();
+                                                                    expires_at = Some(now + ms);
+                                                                }
+                                                            }
+                                                        }
+                                                        
+                                                        let stored_value = StoredValue {
+                                                            value: value.clone(),
+                                                            expires_at,
+                                                        };
+                                                        
+                                                        let mut store = store_for_replication.lock().unwrap();
+                                                        store.insert(key.clone(), stored_value);
+                                                        // Note: No response sent to master for propagated commands
+                                                    }
+                                                }
+                                                "REPLCONF" => {
+                                                    // Handle REPLCONF GETACK command
+                                                    if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
+                                                        // Respond with REPLCONF ACK <current_offset>
+                                                        // The offset should only include commands processed BEFORE this GETACK request
+                                                        let offset_str = replica_offset.to_string();
+                                                        let response = format!(
+                                                            "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
+                                                            offset_str.len(),
+                                                            offset_str
+                                                        );
+                                                        if let Err(e) = master_stream.write_all(response.as_bytes()) {
+                                                            println!("Failed to send REPLCONF ACK to master: {}", e);
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                _ => {
+                                                    // For other commands (like PING), just continue
+                                                }
+                                            }
+                                        }
+                                    }
+                                    // Add buffer size to offset for all commands processed
+                                    replica_offset += n as u64;
                                 }
                             }
                             Err(e) => {
