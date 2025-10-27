@@ -112,6 +112,27 @@ fn calculate_resp_command_size(buffer: &[u8], n: usize) -> usize {
     }
 }
 
+fn parse_multiple_redis_commands(buffer: &[u8], n: usize) -> Vec<(Vec<String>, usize)> {
+    let mut commands = Vec::new();
+    let mut offset = 0;
+    
+    while offset < n {
+        let remaining = &buffer[offset..n];
+        let remaining_size = n - offset;
+        
+        if let Some(args) = parse_redis_command(remaining, remaining_size) {
+            let cmd_size = calculate_resp_command_size(remaining, remaining_size);
+            commands.push((args, cmd_size));
+            offset += cmd_size;
+        } else {
+            // If we can't parse a command, break to avoid infinite loop
+            break;
+        }
+    }
+    
+    commands
+}
+
 fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     if *pos >= bytes.len() {
         return None;
@@ -604,77 +625,78 @@ fn main() {
                                     rdb_consumed = true;
                                 }
                                 
-                                // For now, use the simpler approach of counting all bytes read
-                                // This will be refined in later stages when we need precise offset tracking
-                                let command_size = n as u64;
+                                // Process all commands in the buffer (there might be multiple)
+                                let commands = parse_multiple_redis_commands(&buffer, n);
                                 
-                                // Process propagated commands from master
-                                if let Some(args) = parse_redis_command(&buffer, n) {
-                                    if !args.is_empty() {
-                                        let command = args[0].to_uppercase();
-                                        
-                                        match command.as_str() {
-                                            "SET" => {
-                                                // Process SET command silently (no response to master)
-                                                if args.len() >= 3 {
-                                                    let key = &args[1];
-                                                    let value = &args[2];
-                                                    let mut expires_at = None;
-                                                    
-                                                    // Check for expiration options (PX milliseconds)
-                                                    if args.len() >= 5 {
-                                                        let option = args[3].to_uppercase();
-                                                        if option == "PX" {
-                                                            if let Ok(ms) = args[4].parse::<u128>() {
-                                                                let now = SystemTime::now()
-                                                                    .duration_since(UNIX_EPOCH)
-                                                                    .unwrap()
-                                                                    .as_millis();
-                                                                expires_at = Some(now + ms);
+                                if commands.is_empty() {
+                                    // If we can't parse any commands, just add the buffer size to offset
+                                    replica_offset += n as u64;
+                                } else {
+                                    // Process each command found in the buffer
+                                    for (args, cmd_size) in commands {
+                                        if !args.is_empty() {
+                                            let command = args[0].to_uppercase();
+                                            
+                                            match command.as_str() {
+                                                "SET" => {
+                                                    // Process SET command silently (no response to master)
+                                                    if args.len() >= 3 {
+                                                        let key = &args[1];
+                                                        let value = &args[2];
+                                                        let mut expires_at = None;
+                                                        
+                                                        // Check for expiration options (PX milliseconds)
+                                                        if args.len() >= 5 {
+                                                            let option = args[3].to_uppercase();
+                                                            if option == "PX" {
+                                                                if let Ok(ms) = args[4].parse::<u128>() {
+                                                                    let now = SystemTime::now()
+                                                                        .duration_since(UNIX_EPOCH)
+                                                                        .unwrap()
+                                                                        .as_millis();
+                                                                    expires_at = Some(now + ms);
+                                                                }
                                                             }
                                                         }
+                                                        
+                                                        let stored_value = StoredValue {
+                                                            value: value.clone(),
+                                                            expires_at,
+                                                        };
+                                                        
+                                                        let mut store = store_for_replication.lock().unwrap();
+                                                        store.insert(key.clone(), stored_value);
+                                                        // Note: No response sent to master for propagated commands
                                                     }
-                                                    
-                                                    let stored_value = StoredValue {
-                                                        value: value.clone(),
-                                                        expires_at,
-                                                    };
-                                                    
-                                                    let mut store = store_for_replication.lock().unwrap();
-                                                    store.insert(key.clone(), stored_value);
-                                                    // Note: No response sent to master for propagated commands
+                                                    // Add command size to offset
+                                                    replica_offset += cmd_size as u64;
                                                 }
-                                                // Add command size to offset
-                                                replica_offset += command_size;
-                                            }
-                                            "REPLCONF" => {
-                                                // Handle REPLCONF GETACK command
-                                                if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
-                                                    // Respond with REPLCONF ACK <current_offset>
-                                                    // The offset should only include commands processed BEFORE this GETACK request
-                                                    let offset_str = replica_offset.to_string();
-                                                    let response = format!(
-                                                        "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
-                                                        offset_str.len(),
-                                                        offset_str
-                                                    );
-                                                    if let Err(e) = master_stream.write_all(response.as_bytes()) {
-                                                        println!("Failed to send REPLCONF ACK to master: {}", e);
-                                                        break;
+                                                "REPLCONF" => {
+                                                    // Handle REPLCONF GETACK command
+                                                    if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
+                                                        // Respond with REPLCONF ACK <current_offset>
+                                                        // The offset should only include commands processed BEFORE this GETACK request
+                                                        let offset_str = replica_offset.to_string();
+                                                        let response = format!(
+                                                            "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
+                                                            offset_str.len(),
+                                                            offset_str
+                                                        );
+                                                        if let Err(e) = master_stream.write_all(response.as_bytes()) {
+                                                            println!("Failed to send REPLCONF ACK to master: {}", e);
+                                                            break;
+                                                        }
+                                                        // Add the current REPLCONF GETACK command size to offset for next time
+                                                        replica_offset += cmd_size as u64;
                                                     }
-                                                    // Add the current REPLCONF GETACK command size to offset for next time
-                                                    replica_offset += command_size;
                                                 }
-                                            }
-                                            _ => {
-                                                // For other commands (like PING), just add to offset
-                                                replica_offset += command_size;
+                                                _ => {
+                                                    // For other commands (like PING), just add to offset
+                                                    replica_offset += cmd_size as u64;
+                                                }
                                             }
                                         }
                                     }
-                                } else {
-                                    // Even if we can't parse the command, we still need to count the bytes for offset tracking
-                                    replica_offset += command_size;
                                 }
                             }
                             Err(e) => {
