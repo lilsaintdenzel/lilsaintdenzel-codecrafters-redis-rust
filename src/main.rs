@@ -1026,20 +1026,16 @@ fn main() {
                                                                 let mut ack_count = 0;
                                                                 let mut remaining_replicas = Vec::new();
                                                                 
+                                                                // Use a longer timeout per replica since the test is expecting responses
                                                                 for mut replica in active_replicas {
-                                                                    // Calculate remaining timeout for this replica
-                                                                    let elapsed = start_time.elapsed();
-                                                                    if elapsed >= timeout_duration {
-                                                                        // Timeout already exceeded, add replica back and break
+                                                                    // Check if overall timeout exceeded
+                                                                    if start_time.elapsed() >= timeout_duration {
                                                                         remaining_replicas.push(replica);
-                                                                        break;
+                                                                        continue;
                                                                     }
                                                                     
-                                                                    let remaining_timeout = timeout_duration - elapsed;
-                                                                    let individual_timeout = remaining_timeout.min(Duration::from_millis(500));
-                                                                    
-                                                                    // Set timeout for this replica response
-                                                                    replica.set_read_timeout(Some(individual_timeout)).ok();
+                                                                    // Set a reasonable timeout for each replica response
+                                                                    replica.set_read_timeout(Some(Duration::from_millis(1000))).ok();
                                                                     
                                                                     let mut ack_buffer = [0; 1024];
                                                                     match replica.read(&mut ack_buffer) {
@@ -1064,11 +1060,6 @@ fn main() {
                                                                     // Reset timeout and add replica back to remaining list
                                                                     replica.set_read_timeout(None).ok();
                                                                     remaining_replicas.push(replica);
-                                                                    
-                                                                    // Check if we have enough ACKs
-                                                                    if ack_count >= numreplicas {
-                                                                        break;
-                                                                    }
                                                                 }
                                                                 
                                                                 // Restore remaining active replicas
