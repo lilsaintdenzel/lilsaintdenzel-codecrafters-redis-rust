@@ -1022,13 +1022,24 @@ fn main() {
                                                                 *replicas_guard = Vec::new();
                                                                 drop(replicas_guard);
                                                                 
-                                                                // Collect ACK responses
+                                                                // Collect ACK responses with proper timeout handling
                                                                 let mut ack_count = 0;
                                                                 let mut remaining_replicas = Vec::new();
                                                                 
                                                                 for mut replica in active_replicas {
-                                                                    // Set a short timeout for individual replica responses
-                                                                    replica.set_read_timeout(Some(Duration::from_millis(100))).ok();
+                                                                    // Calculate remaining timeout for this replica
+                                                                    let elapsed = start_time.elapsed();
+                                                                    if elapsed >= timeout_duration {
+                                                                        // Timeout already exceeded, add replica back and break
+                                                                        remaining_replicas.push(replica);
+                                                                        break;
+                                                                    }
+                                                                    
+                                                                    let remaining_timeout = timeout_duration - elapsed;
+                                                                    let individual_timeout = remaining_timeout.min(Duration::from_millis(500));
+                                                                    
+                                                                    // Set timeout for this replica response
+                                                                    replica.set_read_timeout(Some(individual_timeout)).ok();
                                                                     
                                                                     let mut ack_buffer = [0; 1024];
                                                                     match replica.read(&mut ack_buffer) {
@@ -1044,26 +1055,20 @@ fn main() {
                                                                                     }
                                                                                 }
                                                                             }
-                                                                            // Reset timeout and keep replica
-                                                                            replica.set_read_timeout(None).ok();
                                                                         }
                                                                         Err(_) => {
-                                                                            // Replica didn't respond or disconnected
+                                                                            // Replica didn't respond in time or disconnected
                                                                         }
                                                                     }
                                                                     
-                                                                    // Always add replica back to remaining list
+                                                                    // Reset timeout and add replica back to remaining list
+                                                                    replica.set_read_timeout(None).ok();
                                                                     remaining_replicas.push(replica);
                                                                     
-                                                                    // Check if we have enough ACKs or if timeout exceeded
-                                                                    if ack_count >= numreplicas || start_time.elapsed() >= timeout_duration {
+                                                                    // Check if we have enough ACKs
+                                                                    if ack_count >= numreplicas {
                                                                         break;
                                                                     }
-                                                                }
-                                                                
-                                                                // Wait for any remaining time if we don't have enough ACKs
-                                                                while ack_count < numreplicas && start_time.elapsed() < timeout_duration {
-                                                                    thread::sleep(Duration::from_millis(10));
                                                                 }
                                                                 
                                                                 // Restore remaining active replicas
