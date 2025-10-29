@@ -946,14 +946,44 @@ fn main() {
 
 **NEW TODAY: Advanced Customer Service Features**
 
-**WAIT Command - Quality Assurance System:**
-The restaurant now offers quality assurance verification for customers who want to ensure their orders have been properly distributed:
+**WAIT Command - Complete Quality Assurance System:**
+The restaurant now offers comprehensive quality assurance verification for customers who want to ensure their orders have been properly distributed and confirmed by franchise locations:
+
+**Basic WAIT Functionality:**
 - Customer can request "WAIT 0 60000" → "Please confirm that 0 franchise locations have received my order, wait up to 60 seconds"
-- Restaurant immediately responds with current number of connected franchise locations
-- For this implementation stage: when requesting 0 confirmations, immediately returns 0
-- Future stages will track actual acknowledgments from franchise locations
-- Helps customers verify their important orders have been distributed before leaving
-- Critical for ensuring order consistency across the restaurant network
+- When requesting 0 confirmations, immediately returns 0 (no verification needed)
+- When no write commands have been sent yet, immediately returns the number of connected franchises
+
+**Enhanced WAIT with Order Verification:**
+- Customer can request "WAIT 2 1000" → "Please confirm that 2 franchise locations have processed my recent orders, wait up to 1000 milliseconds"
+- **Step 1**: Restaurant tracks every order sent to franchises with precise byte counting (master offset tracking)
+- **Step 2**: Restaurant sends "REPLCONF GETACK *" audit requests to all franchise locations
+- **Step 3**: Each franchise responds with "REPLCONF ACK {offset}" showing how many order bytes they've processed
+- **Step 4**: Restaurant counts how many franchises have processed at least the recent order bytes
+- **Step 5**: Returns actual number of synchronized franchises within the timeout period
+
+**Advanced Timeout Management:**
+- Respects customer's patience: won't wait longer than requested timeout
+- Uses 1000ms timeout per franchise for responses (reasonable wait time)
+- Returns immediately when enough franchises have confirmed
+- Handles franchise communication issues gracefully
+- Maintains active franchise connections for future communications
+
+**Example Quality Assurance Flow:**
+1. Customer orders: "SET burger well-done" → order sent to 3 franchises (31 bytes)
+2. Customer requests: "WAIT 2 500" → "confirm 2 franchises processed my burger order, wait max 500ms"
+3. Restaurant asks franchises: "GETACK *" → "how many order bytes have you processed?"
+4. Franchise A responds: "ACK 31" → "I've processed 31 bytes (including the burger order)"
+5. Franchise B responds: "ACK 31" → "I've processed 31 bytes too"  
+6. Franchise C doesn't respond in time
+7. Restaurant tells customer: "2" → "2 out of 3 franchises confirmed your order"
+
+**Business Value:**
+- Customers can verify critical orders were distributed before leaving
+- Ensures order consistency across the restaurant network
+- Provides real-time franchise synchronization status
+- Helps detect franchise communication problems quickly
+- Critical for high-reliability restaurant operations
 
 **Enhanced Franchise Communication - Multiple Order Processing:**
 Franchise locations now have sophisticated order processing capabilities:

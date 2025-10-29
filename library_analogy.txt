@@ -947,14 +947,44 @@ fn main() {
 
 **NEW TODAY: Advanced Service Coordination System**
 
-**WAIT Command - Quality Assurance Verification:**
-When visitors want to ensure their updates have been properly distributed, they can now request:
+**WAIT Command - Complete Quality Assurance Verification:**
+The library now offers comprehensive verification services for visitors who want to ensure their updates have been properly distributed and confirmed by branch libraries:
+
+**Basic WAIT Functionality:**
 - "WAIT 0 60000" → "Please confirm that 0 branch libraries have received my recent updates, wait up to 60 seconds"
-- Main library immediately responds with current number of connected branches
-- For this implementation stage: when requesting 0 confirmations, immediately returns 0
-- Future stages will track actual acknowledgments from branch libraries
-- Helps visitors verify their important updates have been distributed before proceeding
-- Critical for ensuring data consistency across the library network
+- When requesting 0 confirmations, immediately returns 0 (no verification needed)
+- When no catalog updates have been sent yet, immediately returns the number of connected branches
+
+**Enhanced WAIT with Update Verification:**
+- "WAIT 2 1000" → "Please confirm that 2 branch libraries have processed my recent catalog updates, wait up to 1000 milliseconds"
+- **Step 1**: Main library tracks every update sent to branches with precise byte counting (master offset tracking)
+- **Step 2**: Main library sends "REPLCONF GETACK *" audit requests to all branch locations
+- **Step 3**: Each branch responds with "REPLCONF ACK {offset}" showing how many update bytes they've processed
+- **Step 4**: Main library counts how many branches have processed at least the recent update bytes
+- **Step 5**: Returns actual number of synchronized branches within the timeout period
+
+**Advanced Timeout Management:**
+- Respects visitor's patience: won't wait longer than requested timeout
+- Uses 1000ms timeout per branch for responses (reasonable wait time)
+- Returns immediately when enough branches have confirmed
+- Handles branch communication issues gracefully
+- Maintains active branch connections for future communications
+
+**Example Quality Assurance Flow:**
+1. Visitor adds: "SET book-title content" → update sent to 3 branches (31 bytes)
+2. Visitor requests: "WAIT 2 500" → "confirm 2 branches processed my book addition, wait max 500ms"
+3. Main library asks branches: "GETACK *" → "how many update bytes have you processed?"
+4. Branch A responds: "ACK 31" → "I've processed 31 bytes (including the book addition)"
+5. Branch B responds: "ACK 31" → "I've processed 31 bytes too"  
+6. Branch C doesn't respond in time
+7. Main library tells visitor: "2" → "2 out of 3 branches confirmed your update"
+
+**Business Value:**
+- Visitors can verify critical catalog updates were distributed before leaving
+- Ensures collection consistency across the library network
+- Provides real-time branch synchronization status
+- Helps detect branch communication problems quickly
+- Critical for high-reliability library operations
 
 **Enhanced Branch Processing - Multiple Instruction Handling:**
 Branch libraries now have sophisticated instruction processing capabilities:
