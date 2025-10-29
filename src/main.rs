@@ -7,7 +7,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 struct StoredValue {
@@ -24,6 +24,7 @@ struct Config {
 }
 
 type ReplicaConnections = Arc<Mutex<Vec<TcpStream>>>;
+type MasterOffset = Arc<Mutex<u64>>;
 
 fn propagate_command_to_replicas(replicas: &ReplicaConnections, command: &[String]) {
     let mut replicas_guard = replicas.lock().unwrap();
@@ -538,6 +539,7 @@ fn main() {
     let initial_data = load_rdb_file(&config);
     let data_store = Arc::new(Mutex::new(initial_data));
     let replica_connections: ReplicaConnections = Arc::new(Mutex::new(Vec::new()));
+    let master_offset: MasterOffset = Arc::new(Mutex::new(0));
     
     // If this is a replica, connect to master and perform handshake
     if let Some((master_host, master_port)) = &config.replicaof {
@@ -786,6 +788,7 @@ fn main() {
             Ok(mut stream) => {
                 let store_clone = Arc::clone(&data_store);
                 let replicas_clone = Arc::clone(&replica_connections);
+                let master_offset_clone = Arc::clone(&master_offset);
                 let config_clone = config.clone();
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
@@ -841,6 +844,10 @@ fn main() {
                                                     // Propagate SET command to replicas (only if this is a master)
                                                     if config_clone.replicaof.is_none() {
                                                         propagate_command_to_replicas(&replicas_clone, &args);
+                                                        // Update master offset after propagation
+                                                        let command_size = calculate_resp_command_size(&buffer, n);
+                                                        let mut offset = master_offset_clone.lock().unwrap();
+                                                        *offset += command_size as u64;
                                                     }
                                                 }
                                             }
@@ -979,16 +986,95 @@ fn main() {
                                             "WAIT" => {
                                                 if args.len() >= 3 {
                                                     // Parse numreplicas and timeout
-                                                    if let (Ok(numreplicas), Ok(_timeout)) = (args[1].parse::<u32>(), args[2].parse::<u32>()) {
-                                                        // For this stage, handle the simple case: when numreplicas is 0
-                                                        // and we have no replicas connected, return 0 immediately
+                                                    if let (Ok(numreplicas), Ok(timeout_ms)) = (args[1].parse::<u32>(), args[2].parse::<u32>()) {
+                                                        // Handle the simple case: when numreplicas is 0
                                                         if numreplicas == 0 {
                                                             stream.write_all(b":0\r\n").unwrap();
                                                         } else {
-                                                            // For non-zero numreplicas, return the current number of connected replicas
-                                                            let replica_count = replicas_clone.lock().unwrap().len();
-                                                            let response = format!(":{}\r\n", replica_count);
-                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                            // Get current master offset
+                                                            let current_offset = {
+                                                                let offset = master_offset_clone.lock().unwrap();
+                                                                *offset
+                                                            };
+                                                            
+                                                            // If offset is 0, no write commands have been sent, return replica count immediately
+                                                            if current_offset == 0 {
+                                                                let replica_count = replicas_clone.lock().unwrap().len();
+                                                                let response = format!(":{}\r\n", replica_count);
+                                                                stream.write_all(response.as_bytes()).unwrap();
+                                                            } else {
+                                                                // Send GETACK to all replicas and wait for responses
+                                                                let start_time = Instant::now();
+                                                                let timeout_duration = Duration::from_millis(timeout_ms as u64);
+                                                                
+                                                                // Send REPLCONF GETACK * to all replicas
+                                                                let getack_command = b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
+                                                                let mut replicas_guard = replicas_clone.lock().unwrap();
+                                                                let mut active_replicas = Vec::new();
+                                                                
+                                                                for mut replica in replicas_guard.drain(..) {
+                                                                    if replica.write_all(getack_command).is_ok() {
+                                                                        active_replicas.push(replica);
+                                                                    }
+                                                                }
+                                                                
+                                                                // Update replica list with only active replicas
+                                                                *replicas_guard = Vec::new();
+                                                                drop(replicas_guard);
+                                                                
+                                                                // Collect ACK responses
+                                                                let mut ack_count = 0;
+                                                                let mut remaining_replicas = Vec::new();
+                                                                
+                                                                for mut replica in active_replicas {
+                                                                    // Set a short timeout for individual replica responses
+                                                                    replica.set_read_timeout(Some(Duration::from_millis(100))).ok();
+                                                                    
+                                                                    let mut ack_buffer = [0; 1024];
+                                                                    match replica.read(&mut ack_buffer) {
+                                                                        Ok(ack_n) => {
+                                                                            if let Some(ack_args) = parse_redis_command(&ack_buffer, ack_n) {
+                                                                                if ack_args.len() >= 3 && 
+                                                                                   ack_args[0].to_uppercase() == "REPLCONF" && 
+                                                                                   ack_args[1].to_uppercase() == "ACK" {
+                                                                                    if let Ok(replica_offset) = ack_args[2].parse::<u64>() {
+                                                                                        if replica_offset >= current_offset {
+                                                                                            ack_count += 1;
+                                                                                        }
+                                                                                    }
+                                                                                }
+                                                                            }
+                                                                            // Reset timeout and keep replica
+                                                                            replica.set_read_timeout(None).ok();
+                                                                        }
+                                                                        Err(_) => {
+                                                                            // Replica didn't respond or disconnected
+                                                                        }
+                                                                    }
+                                                                    
+                                                                    // Always add replica back to remaining list
+                                                                    remaining_replicas.push(replica);
+                                                                    
+                                                                    // Check if we have enough ACKs or if timeout exceeded
+                                                                    if ack_count >= numreplicas || start_time.elapsed() >= timeout_duration {
+                                                                        break;
+                                                                    }
+                                                                }
+                                                                
+                                                                // Wait for any remaining time if we don't have enough ACKs
+                                                                while ack_count < numreplicas && start_time.elapsed() < timeout_duration {
+                                                                    thread::sleep(Duration::from_millis(10));
+                                                                }
+                                                                
+                                                                // Restore remaining active replicas
+                                                                let mut replicas_guard = replicas_clone.lock().unwrap();
+                                                                replicas_guard.extend(remaining_replicas);
+                                                                drop(replicas_guard);
+                                                                
+                                                                // Return the number of replicas that acknowledged
+                                                                let response = format!(":{}\r\n", ack_count);
+                                                                stream.write_all(response.as_bytes()).unwrap();
+                                                            }
                                                         }
                                                     } else {
                                                         // Invalid arguments
