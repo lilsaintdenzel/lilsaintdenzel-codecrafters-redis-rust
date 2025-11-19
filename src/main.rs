@@ -538,6 +538,7 @@ fn main() {
     // Initialize data store first
     let initial_data = load_rdb_file(&config);
     let data_store = Arc::new(Mutex::new(initial_data));
+    let list_store = Arc::new(Mutex::new(HashMap::<String, Vec<String>>::new()));
     let replica_connections: ReplicaConnections = Arc::new(Mutex::new(Vec::new()));
     let master_offset: MasterOffset = Arc::new(Mutex::new(0));
     
@@ -787,6 +788,7 @@ fn main() {
         match stream {
             Ok(mut stream) => {
                 let store_clone = Arc::clone(&data_store);
+                let list_store_clone = Arc::clone(&list_store);
                 let replicas_clone = Arc::clone(&replica_connections);
                 let master_offset_clone = Arc::clone(&master_offset);
                 let config_clone = config.clone();
@@ -1079,6 +1081,31 @@ fn main() {
                                                 } else {
                                                     // Not enough arguments
                                                     stream.write_all(b"-ERR wrong number of arguments for 'wait' command\r\n").unwrap();
+                                                }
+                                            }
+                                            "RPUSH" => {
+                                                if args.len() >= 3 {
+                                                    let key = &args[1];
+                                                    let value = &args[2];
+                                                    
+                                                    // Get or create list and append value
+                                                    let list_length = {
+                                                        let mut lists = list_store_clone.lock().unwrap();
+                                                        let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+                                                        list.push(value.clone());
+                                                        list.len()
+                                                    };
+                                                    
+                                                    // Return length as RESP integer
+                                                    let response = format!(":{}\r\n", list_length);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                    
+                                                    // Propagate to replicas if acting as master
+                                                    if config_clone.replicaof.is_none() {
+                                                        propagate_command_to_replicas(&replicas_clone, &args);
+                                                    }
+                                                } else {
+                                                    stream.write_all(b"-ERR wrong number of arguments for 'rpush' command\r\n").unwrap();
                                                 }
                                             }
                                             _ => {
