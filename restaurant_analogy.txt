@@ -833,6 +833,7 @@ fn main() {
 - **PING**: "Are you open?" → "Yes, we're here!" (connectivity check)
 - **ECHO**: "Did you hear me say X?" → "Yes, I heard X" (confirmation)
 - **SET/GET**: Order placement and retrieval with optional timing windows
+- **RPUSH**: "Add item to order queue!" → Returns total items in queue (list operations)
 - **CONFIG GET**: Questions about restaurant setup and kitchen location
 - **KEYS**: "What's on the menu?" with search capabilities
 - **INFO**: Restaurant status, type, and tracking information
@@ -1000,4 +1001,34 @@ Franchise locations now have sophisticated order processing capabilities:
 - Enhanced buffer management ensures all orders are processed correctly
 - Maintains perfect synchronization even when receiving multiple simultaneous orders
 
-This restaurant system is now enterprise-ready and provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, quality assurance verification, multiple order processing, recipe persistence, and multi-customer handling capabilities with maximum reliability!
+**NEW: Queue-Based Order System (RPUSH Command)**
+
+The restaurant now features advanced queue management for sequential order processing:
+
+**Queue Management System:**
+- RPUSH allows customers to add items to specific order queues: "RPUSH table1 burger" (adds burger to table1's order queue)
+- Returns the total number of items in that queue after adding: ":1\r\n" for first item, ":2\r\n" for second item
+- Each table/customer can have their own dedicated order queue (like numbered waiting lists)
+- Order queues are separate from the main menu (data_store) and work independently
+
+**Implementation Details:**
+- `order_queues`: Separate HashMap<String, Vec<String>> for storing order queues
+- Thread-safe access using Arc<Mutex<>> just like the main order book
+- RPUSH creates new queues automatically if they don't exist
+- Queue names can be anything: table numbers, customer names, order types
+- Perfect for restaurants managing multiple tables or sequential service requirements
+
+**Customer Experience:**
+- "RPUSH table5 appetizer" → "1" (first item added to table5's queue)
+- "RPUSH table5 main_course" → "2" (second item added to table5's queue)  
+- "RPUSH table5 dessert" → "3" (third item added to table5's queue)
+- Each queue maintains perfect order sequence for kitchen workflow
+
+**Business Benefits:**
+- Waiters can track exactly how many items each table has ordered in sequence
+- Kitchen can process orders in the correct order for each table
+- Perfect for managing complex multi-course meals
+- Enables sophisticated order workflow management
+- Works alongside existing order system (SET/GET) for maximum flexibility
+
+This restaurant system is now enterprise-ready and provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, quality assurance verification, multiple order processing, queue-based order management, recipe persistence, and multi-customer handling capabilities with maximum reliability!

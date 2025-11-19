@@ -31,6 +31,7 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "SET [title] [content]" → stores it in the library's catalog and confirms "OK"**
    - **If they say "SET [title] [content] px [time]" → stores it as a temporary exhibit that expires after the specified time!**
    - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
+   - **If they say "RPUSH [reading-list] [book]" → adds book to the specified reading list and returns total books in that list**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
    - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
    - **If they say "INFO replication" → provides information about the library's role and replication status (reports role:master with master_replid and master_repl_offset for main library, role:slave for replica library)**
@@ -1001,4 +1002,34 @@ Branch libraries now have sophisticated instruction processing capabilities:
 - Enhanced buffer management ensures all instructions are processed correctly
 - Maintains perfect synchronization even when receiving multiple simultaneous updates
 
-The library system is now enterprise-ready - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, real-time collection synchronization, branch status monitoring, quality assurance verification, multiple instruction processing, and respond appropriately to all visitor needs with maximum reliability!
+**NEW: Reading List Management System (RPUSH Command)**
+
+The library now offers advanced reading list management for organized book collections:
+
+**Reading List Features:**
+- RPUSH allows visitors to create and manage personalized reading lists: "RPUSH mystery-novels detective-story" (adds detective-story to mystery-novels list)
+- Returns the total number of books in that reading list: ":1\r\n" for first book, ":2\r\n" for second book
+- Each visitor can maintain multiple themed reading lists: fiction, non-fiction, research, etc.
+- Reading lists are separate from the main catalog and work independently
+
+**Implementation Details:**
+- `reading_lists`: Separate HashMap<String, Vec<String>> for storing book lists
+- Thread-safe access using Arc<Mutex<>> just like the main catalog
+- RPUSH creates new lists automatically when they don't exist
+- List names can be anything: subject areas, visitor names, project topics
+- Perfect for academic research, themed collections, or personal organization
+
+**Visitor Experience:**
+- "RPUSH science-fiction dune" → "1" (first book added to science-fiction list)
+- "RPUSH science-fiction foundation" → "2" (second book added to science-fiction list)
+- "RPUSH science-fiction neuromancer" → "3" (third book added to science-fiction list)
+- Each list maintains perfect order for reading sequence
+
+**Library Benefits:**
+- Visitors can organize books by topic, project, or reading order
+- Librarians can track how many books are in each themed collection
+- Perfect for research projects requiring multiple related books
+- Enables sophisticated collection management
+- Works alongside existing catalog system (SET/GET) for maximum flexibility
+
+The library system is now enterprise-ready - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, real-time collection synchronization, branch status monitoring, quality assurance verification, multiple instruction processing, reading list management, and respond appropriately to all visitor needs with maximum reliability!
