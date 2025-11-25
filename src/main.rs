@@ -1086,13 +1086,15 @@ fn main() {
                                             "RPUSH" => {
                                                 if args.len() >= 3 {
                                                     let key = &args[1];
-                                                    let value = &args[2];
+                                                    let values = &args[2..];
                                                     
-                                                    // Get or create list and append value
+                                                    // Get or create list and append all values
                                                     let list_length = {
                                                         let mut lists = list_store_clone.lock().unwrap();
                                                         let list = lists.entry(key.clone()).or_insert_with(Vec::new);
-                                                        list.push(value.clone());
+                                                        for value in values {
+                                                            list.push(value.clone());
+                                                        }
                                                         list.len()
                                                     };
                                                     
