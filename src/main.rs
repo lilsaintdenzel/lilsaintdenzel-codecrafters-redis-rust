@@ -572,6 +572,7 @@ fn main() {
                 
                 // Keep listening for propagated commands from master
                 let store_for_replication = Arc::clone(&data_store);
+                let list_store_for_replication = Arc::clone(&list_store);
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
                     let mut replica_offset = 0u64;
@@ -694,6 +695,20 @@ fn main() {
                                                         }
                                                     }
                                                 }
+                                                "RPUSH" => {
+                                                    // Process RPUSH command silently (no response to master)
+                                                    if args.len() >= 3 {
+                                                        let key = &args[1];
+                                                        let values = &args[2..];
+                                                        
+                                                        let mut lists = list_store_for_replication.lock().unwrap();
+                                                        let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+                                                        for value in values {
+                                                            list.push(value.clone());
+                                                        }
+                                                        // Note: No response sent to master for propagated commands
+                                                    }
+                                                }
                                                 _ => {
                                                     // For other commands (like PING), just continue
                                                 }
@@ -755,6 +770,20 @@ fn main() {
                                                             println!("Failed to send REPLCONF ACK to master: {}", e);
                                                             break;
                                                         }
+                                                    }
+                                                }
+                                                "RPUSH" => {
+                                                    // Process RPUSH command silently (no response to master)
+                                                    if args.len() >= 3 {
+                                                        let key = &args[1];
+                                                        let values = &args[2..];
+                                                        
+                                                        let mut lists = list_store_for_replication.lock().unwrap();
+                                                        let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+                                                        for value in values {
+                                                            list.push(value.clone());
+                                                        }
+                                                        // Note: No response sent to master for propagated commands
                                                     }
                                                 }
                                                 _ => {
