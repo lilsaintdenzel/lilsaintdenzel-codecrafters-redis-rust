@@ -1139,6 +1139,74 @@ fn main() {
                                                     stream.write_all(b"-ERR wrong number of arguments for 'rpush' command\r\n").unwrap();
                                                 }
                                             }
+                                            "LRANGE" => {
+                                                if args.len() >= 4 {
+                                                    let key = &args[1];
+                                                    let start: isize = match args[2].parse() {
+                                                        Ok(n) => n,
+                                                        Err(_) => {
+                                                            stream.write_all(b"-ERR value is not an integer or out of range\r\n").unwrap();
+                                                            continue;
+                                                        }
+                                                    };
+                                                    let stop: isize = match args[3].parse() {
+                                                        Ok(n) => n,
+                                                        Err(_) => {
+                                                            stream.write_all(b"-ERR value is not an integer or out of range\r\n").unwrap();
+                                                            continue;
+                                                        }
+                                                    };
+                                                    
+                                                    let lists = list_store_clone.lock().unwrap();
+                                                    match lists.get(key) {
+                                                        Some(list) => {
+                                                            let list_len = list.len() as isize;
+                                                            
+                                                            // For this stage, we only handle non-negative indexes
+                                                            if start < 0 || stop < 0 {
+                                                                stream.write_all(b"*0\r\n").unwrap();
+                                                                continue;
+                                                            }
+                                                            
+                                                            // If start >= list length, return empty array
+                                                            if start >= list_len {
+                                                                stream.write_all(b"*0\r\n").unwrap();
+                                                                continue;
+                                                            }
+                                                            
+                                                            // If start > stop, return empty array
+                                                            if start > stop {
+                                                                stream.write_all(b"*0\r\n").unwrap();
+                                                                continue;
+                                                            }
+                                                            
+                                                            // Adjust stop if it's >= list length
+                                                            let actual_stop = if stop >= list_len {
+                                                                list_len - 1
+                                                            } else {
+                                                                stop
+                                                            };
+                                                            
+                                                            // Extract the range
+                                                            let range_len = (actual_stop - start + 1) as usize;
+                                                            let mut response = format!("*{}\r\n", range_len);
+                                                            
+                                                            for i in start..=actual_stop {
+                                                                let element = &list[i as usize];
+                                                                response.push_str(&format!("${}\r\n{}\r\n", element.len(), element));
+                                                            }
+                                                            
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        None => {
+                                                            // List doesn't exist, return empty array
+                                                            stream.write_all(b"*0\r\n").unwrap();
+                                                        }
+                                                    }
+                                                } else {
+                                                    stream.write_all(b"-ERR wrong number of arguments for 'lrange' command\r\n").unwrap();
+                                                }
+                                            }
                                             _ => {
                                                 stream.write_all(b"+PONG\r\n").unwrap();
                                             }
