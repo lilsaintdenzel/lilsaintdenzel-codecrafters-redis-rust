@@ -1162,36 +1162,55 @@ fn main() {
                                                         Some(list) => {
                                                             let list_len = list.len() as isize;
                                                             
-                                                            // For this stage, we only handle non-negative indexes
-                                                            if start < 0 || stop < 0 {
-                                                                stream.write_all(b"*0\r\n").unwrap();
-                                                                continue;
-                                                            }
+                                                            // Convert negative indexes to positive
+                                                            let actual_start = if start < 0 {
+                                                                // Negative index: -1 = last element, -2 = second-to-last, etc.
+                                                                let converted = list_len + start;
+                                                                if converted < 0 {
+                                                                    0  // Out of range negative, treat as 0
+                                                                } else {
+                                                                    converted
+                                                                }
+                                                            } else {
+                                                                start
+                                                            };
+                                                            
+                                                            let actual_stop = if stop < 0 {
+                                                                // Negative index conversion
+                                                                let converted = list_len + stop;
+                                                                if converted < 0 {
+                                                                    -1  // Will cause empty result since start can't be < 0
+                                                                } else {
+                                                                    converted
+                                                                }
+                                                            } else {
+                                                                stop
+                                                            };
                                                             
                                                             // If start >= list length, return empty array
-                                                            if start >= list_len {
+                                                            if actual_start >= list_len {
                                                                 stream.write_all(b"*0\r\n").unwrap();
                                                                 continue;
                                                             }
                                                             
-                                                            // If start > stop, return empty array
-                                                            if start > stop {
+                                                            // If start > stop (after conversion), return empty array
+                                                            if actual_start > actual_stop {
                                                                 stream.write_all(b"*0\r\n").unwrap();
                                                                 continue;
                                                             }
                                                             
                                                             // Adjust stop if it's >= list length
-                                                            let actual_stop = if stop >= list_len {
+                                                            let final_stop = if actual_stop >= list_len {
                                                                 list_len - 1
                                                             } else {
-                                                                stop
+                                                                actual_stop
                                                             };
                                                             
                                                             // Extract the range
-                                                            let range_len = (actual_stop - start + 1) as usize;
+                                                            let range_len = (final_stop - actual_start + 1) as usize;
                                                             let mut response = format!("*{}\r\n", range_len);
                                                             
-                                                            for i in start..=actual_stop {
+                                                            for i in actual_start..=final_stop {
                                                                 let element = &list[i as usize];
                                                                 response.push_str(&format!("${}\r\n{}\r\n", element.len(), element));
                                                             }
