@@ -1055,12 +1055,14 @@ The library now offers advanced browsing capabilities for reading lists, allowin
 **Flexible List Viewing:**
 - LRANGE enables partial viewing of reading lists: "LRANGE mystery-novels 0 2" → shows first 3 books (positions 0, 1, 2)
 - Supports any range within the list: "LRANGE course-syllabus 5 10" → shows books from position 5 to 10
+- **NEW: Negative indexes from end of list**: "LRANGE fiction -2 -1" → shows last 2 books (-1 = last, -2 = second-to-last)
 - Both start and stop positions are inclusive, making it intuitive for visitors
 - Perfect for paginated viewing of long reading lists or reviewing specific sections
 
 **Smart Boundary Handling:**
 - Non-existent lists return empty results: "LRANGE unknown-list 0 5" → returns empty array (*0\r\n)
 - Gracefully handles out-of-bounds requests: "LRANGE short-list 0 100" → returns all available books without error
+- **Out-of-range negative indexes treated as 0**: "LRANGE short-list -10 -1" → shows entire list when -10 exceeds list length
 - Empty range requests work correctly: "LRANGE any-list 5 2" → returns empty when start > stop
 - Start position beyond list length returns empty result, preventing confusion
 
@@ -1068,7 +1070,8 @@ The library now offers advanced browsing capabilities for reading lists, allowin
 - "LRANGE summer-reading 0 4" → "Show me the first 5 books on my summer reading list"
 - "LRANGE research-papers 10 19" → "Show me papers 11-20 from my research collection"
 - "LRANGE course-materials 0 0" → "Just show me the first item"
-- "LRANGE completed-books 0 -1" → (Note: negative indexes reserved for future enhancement)
+- "LRANGE completed-books 0 -1" → "Show me all books from first to last"
+- "LRANGE summer-reading -3 -1" → "Show me the last 3 books on my summer list"
 
 **Implementation Excellence:**
 - Efficient range extraction without copying entire lists

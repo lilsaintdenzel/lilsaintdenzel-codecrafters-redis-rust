@@ -1054,12 +1054,14 @@ The restaurant now offers advanced order queue browsing capabilities, allowing s
 **Flexible Queue Viewing:**
 - LRANGE enables partial viewing of order queues: "LRANGE table5 0 2" → shows first 3 items (positions 0, 1, 2)
 - Supports any range within the queue: "LRANGE banquet_order 5 10" → shows items from position 5 to 10
+- **NEW: Negative indexes from end of queue**: "LRANGE table8 -2 -1" → shows last 2 items (-1 = last, -2 = second-to-last)
 - Both start and stop positions are inclusive, making it intuitive for staff
 - Perfect for checking order progress or reviewing specific parts of large orders
 
 **Smart Boundary Handling:**
 - Non-existent queues return empty results: "LRANGE table99 0 5" → returns empty array (*0\r\n)
 - Gracefully handles out-of-bounds requests: "LRANGE small_order 0 100" → returns all available items without error
+- **Out-of-range negative indexes treated as 0**: "LRANGE small_order -10 -1" → shows entire queue when -10 exceeds queue length
 - Empty range requests work correctly: "LRANGE any_order 5 2" → returns empty when start > stop
 - Start position beyond queue length returns empty result, preventing confusion
 
@@ -1067,7 +1069,8 @@ The restaurant now offers advanced order queue browsing capabilities, allowing s
 - "LRANGE table8 0 1" → "Show me the first 2 items for table 8" (appetizer and soup)
 - "LRANGE catering_event 10 19" → "Show items 11-20 from the catering order"
 - "LRANGE takeout_42 0 0" → "Just show me the first item in order 42"
-- "LRANGE party_order 0 -1" → (Note: negative indexes reserved for future enhancement)
+- "LRANGE party_order 0 -1" → "Show me all items from first to last"
+- "LRANGE table12 -3 -1" → "Show me the last 3 items for table 12"
 
 **Implementation Excellence:**
 - Efficient range extraction without processing entire queues
