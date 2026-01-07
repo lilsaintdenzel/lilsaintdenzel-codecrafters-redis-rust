@@ -32,6 +32,7 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "SET [title] [content] px [time]" → stores it as a temporary exhibit that expires after the specified time!**
    - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
    - **If they say "RPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the specified reading list at once and returns total books in that list**
+   - **If they say "LRANGE [reading-list] [start] [stop]" → shows books from the reading list between the start and stop positions (both inclusive)**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
    - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
    - **If they say "INFO replication" → provides information about the library's role and replication status (reports role:master with master_replid and master_repl_offset for main library, role:slave for replica library)**
@@ -1047,4 +1048,45 @@ The library now offers sophisticated batch reading list management for efficient
 - Works seamlessly alongside existing catalog system (SET/GET) for maximum flexibility
 - Supports both individual book additions and complete collection requirements
 
-The library system is now enterprise-ready - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, real-time collection synchronization, branch status monitoring, quality assurance verification, multiple instruction processing, reading list management, and respond appropriately to all visitor needs with maximum reliability!
+**NEW: Reading List Browsing System (LRANGE)**
+
+The library now offers advanced browsing capabilities for reading lists, allowing visitors to view specific portions of any reading list:
+
+**Flexible List Viewing:**
+- LRANGE enables partial viewing of reading lists: "LRANGE mystery-novels 0 2" → shows first 3 books (positions 0, 1, 2)
+- Supports any range within the list: "LRANGE course-syllabus 5 10" → shows books from position 5 to 10
+- Both start and stop positions are inclusive, making it intuitive for visitors
+- Perfect for paginated viewing of long reading lists or reviewing specific sections
+
+**Smart Boundary Handling:**
+- Non-existent lists return empty results: "LRANGE unknown-list 0 5" → returns empty array (*0\r\n)
+- Gracefully handles out-of-bounds requests: "LRANGE short-list 0 100" → returns all available books without error
+- Empty range requests work correctly: "LRANGE any-list 5 2" → returns empty when start > stop
+- Start position beyond list length returns empty result, preventing confusion
+
+**Practical Use Cases:**
+- "LRANGE summer-reading 0 4" → "Show me the first 5 books on my summer reading list"
+- "LRANGE research-papers 10 19" → "Show me papers 11-20 from my research collection"
+- "LRANGE course-materials 0 0" → "Just show me the first item"
+- "LRANGE completed-books 0 -1" → (Note: negative indexes reserved for future enhancement)
+
+**Implementation Excellence:**
+- Efficient range extraction without copying entire lists
+- Thread-safe access coordinated with RPUSH operations
+- Returns proper RESP arrays: *3\r\n$5\r\nbook1\r\n$5\r\nbook2\r\n$5\r\nbook3\r\n
+- Seamlessly integrates with existing list management system
+
+**Branch Library Consistency:**
+- LRANGE works identically at all library locations
+- Visitors get the same results whether at main library or any branch
+- No synchronization needed - LRANGE is a read-only operation
+- Each branch can serve list queries independently for better performance
+
+**Enhanced Visitor Experience:**
+Example workflow:
+1. "RPUSH fiction-series book1 book2 book3 book4 book5" → "5" (creates series with 5 books)
+2. "LRANGE fiction-series 0 2" → ["book1", "book2", "book3"] (preview first 3 books)
+3. "LRANGE fiction-series 3 4" → ["book4", "book5"] (view remaining books)
+4. "LRANGE fiction-series 1 3" → ["book2", "book3", "book4"] (view middle section)
+
+The library system is now enterprise-ready - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, real-time collection synchronization, branch status monitoring, quality assurance verification, multiple instruction processing, reading list management with flexible browsing capabilities, and respond appropriately to all visitor needs with maximum reliability!

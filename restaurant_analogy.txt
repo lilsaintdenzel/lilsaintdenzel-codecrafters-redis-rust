@@ -834,6 +834,7 @@ fn main() {
 - **ECHO**: "Did you hear me say X?" → "Yes, I heard X" (confirmation)
 - **SET/GET**: Order placement and retrieval with optional timing windows
 - **RPUSH**: "Add item to order queue!" → Returns total items in queue (list operations)
+- **LRANGE**: "Show me items from order queue!" → Returns items between start and stop positions (inclusive)
 - **CONFIG GET**: Questions about restaurant setup and kitchen location
 - **KEYS**: "What's on the menu?" with search capabilities
 - **INFO**: Restaurant status, type, and tracking information
@@ -1046,4 +1047,51 @@ The restaurant now features sophisticated queue management for efficient batch o
 - Works seamlessly alongside existing order system (SET/GET) for maximum flexibility
 - Supports both small individual orders and large batch requirements
 
-This restaurant system is now enterprise-ready and provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, quality assurance verification, multiple order processing, queue-based order management, recipe persistence, and multi-customer handling capabilities with maximum reliability!
+**NEW: Order Queue Viewing System (LRANGE Command)**
+
+The restaurant now offers advanced order queue browsing capabilities, allowing staff and customers to view specific portions of any order queue:
+
+**Flexible Queue Viewing:**
+- LRANGE enables partial viewing of order queues: "LRANGE table5 0 2" → shows first 3 items (positions 0, 1, 2)
+- Supports any range within the queue: "LRANGE banquet_order 5 10" → shows items from position 5 to 10
+- Both start and stop positions are inclusive, making it intuitive for staff
+- Perfect for checking order progress or reviewing specific parts of large orders
+
+**Smart Boundary Handling:**
+- Non-existent queues return empty results: "LRANGE table99 0 5" → returns empty array (*0\r\n)
+- Gracefully handles out-of-bounds requests: "LRANGE small_order 0 100" → returns all available items without error
+- Empty range requests work correctly: "LRANGE any_order 5 2" → returns empty when start > stop
+- Start position beyond queue length returns empty result, preventing confusion
+
+**Practical Restaurant Scenarios:**
+- "LRANGE table8 0 1" → "Show me the first 2 items for table 8" (appetizer and soup)
+- "LRANGE catering_event 10 19" → "Show items 11-20 from the catering order"
+- "LRANGE takeout_42 0 0" → "Just show me the first item in order 42"
+- "LRANGE party_order 0 -1" → (Note: negative indexes reserved for future enhancement)
+
+**Implementation Excellence:**
+- Efficient range extraction without processing entire queues
+- Thread-safe access coordinated with RPUSH operations
+- Returns proper menu format: *3\r\n$6\r\nburger\r\n$5\r\nfries\r\n$5\r\ndrink\r\n
+- Seamlessly integrates with existing queue management system
+
+**Franchise Consistency:**
+- LRANGE works identically at all restaurant locations
+- Staff get the same results whether at headquarters or any franchise
+- No synchronization needed - LRANGE is a read-only operation
+- Each location can check orders independently for better performance
+
+**Enhanced Restaurant Workflow:**
+Example service flow:
+1. "RPUSH table12 appetizer soup salad entree dessert" → "5" (complete dinner order)
+2. "LRANGE table12 0 2" → ["appetizer", "soup", "salad"] (check first courses)
+3. "LRANGE table12 3 4" → ["entree", "dessert"] (check remaining courses)
+4. "LRANGE table12 1 3" → ["soup", "salad", "entree"] (view middle courses)
+
+**Kitchen and Service Benefits:**
+- Chefs can preview upcoming dishes without disrupting queue
+- Waiters can check what's coming next for each table
+- Managers can monitor order flow across all tables
+- Perfect for tracking multi-course meals and timed service
+
+This restaurant system is now enterprise-ready and provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, quality assurance verification, multiple order processing, queue-based order management with flexible viewing, recipe persistence, and multi-customer handling capabilities with maximum reliability!
