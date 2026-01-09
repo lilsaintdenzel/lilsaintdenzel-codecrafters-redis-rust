@@ -709,6 +709,20 @@ fn main() {
                                                         // Note: No response sent to master for propagated commands
                                                     }
                                                 }
+                                                "LPUSH" => {
+                                                    // Process LPUSH command silently (no response to master)
+                                                    if args.len() >= 3 {
+                                                        let key = &args[1];
+                                                        let values = &args[2..];
+                                                        
+                                                        let mut lists = list_store_for_replication.lock().unwrap();
+                                                        let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+                                                        for value in values {
+                                                            list.insert(0, value.clone());
+                                                        }
+                                                        // Note: No response sent to master for propagated commands
+                                                    }
+                                                }
                                                 _ => {
                                                     // For other commands (like PING), just continue
                                                 }
@@ -782,6 +796,20 @@ fn main() {
                                                         let list = lists.entry(key.clone()).or_insert_with(Vec::new);
                                                         for value in values {
                                                             list.push(value.clone());
+                                                        }
+                                                        // Note: No response sent to master for propagated commands
+                                                    }
+                                                }
+                                                "LPUSH" => {
+                                                    // Process LPUSH command silently (no response to master)
+                                                    if args.len() >= 3 {
+                                                        let key = &args[1];
+                                                        let values = &args[2..];
+                                                        
+                                                        let mut lists = list_store_for_replication.lock().unwrap();
+                                                        let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+                                                        for value in values {
+                                                            list.insert(0, value.clone());
                                                         }
                                                         // Note: No response sent to master for propagated commands
                                                     }
