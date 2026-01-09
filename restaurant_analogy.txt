@@ -833,7 +833,8 @@ fn main() {
 - **PING**: "Are you open?" → "Yes, we're here!" (connectivity check)
 - **ECHO**: "Did you hear me say X?" → "Yes, I heard X" (confirmation)
 - **SET/GET**: Order placement and retrieval with optional timing windows
-- **RPUSH**: "Add item to order queue!" → Returns total items in queue (list operations)
+- **RPUSH**: "Add item to END of order queue!" → Returns total items in queue (regular queue addition)
+- **LPUSH**: "Add item to FRONT of order queue!" → Returns total items in queue (priority/rush orders!)
 - **LRANGE**: "Show me items from order queue!" → Returns items between start and stop positions (inclusive)
 - **CONFIG GET**: Questions about restaurant setup and kitchen location
 - **KEYS**: "What's on the menu?" with search capabilities
@@ -1046,6 +1047,45 @@ The restaurant now features sophisticated queue management for efficient batch o
 - Reduces network traffic for large orders (one command vs. many)
 - Works seamlessly alongside existing order system (SET/GET) for maximum flexibility
 - Supports both small individual orders and large batch requirements
+
+**NEW: Priority Order System (LPUSH Command - Left Push)**
+
+The restaurant now offers priority queue management for rush orders and VIP customers:
+
+**Priority Order Placement:**
+- LPUSH adds items to the FRONT of order queues: "LPUSH table5 rush_appetizer vip_drink"
+- Unlike RPUSH which adds to the back of the queue, LPUSH is for urgent/priority orders
+- Perfect for VIP customers, allergy-related dishes, or time-sensitive orders
+- Multiple items are added in reverse order: "LPUSH queue a b c" results in order [c, b, a] at the front
+
+**Restaurant Use Cases:**
+- "LPUSH table3 allergy_free_meal" → puts urgent allergy-safe dish at front of table's queue
+- "LPUSH vip_table champagne oysters" → prioritizes VIP items for immediate preparation
+- "LPUSH kitchen_urgent birthday_cake" → ensures time-sensitive items are prepared first
+- Combines with RPUSH for complete queue management: urgent items at front (LPUSH), regular items at back (RPUSH)
+
+**Implementation Details:**
+- Uses `list.insert(0, item)` to add each item at position 0 (front of queue)
+- When multiple items provided, they're inserted sequentially, resulting in reverse order
+- Returns total queue length after all items are added
+- Thread-safe operation coordinated with other queue commands
+
+**Franchise Synchronization:**
+- LPUSH commands are propagated to all franchise kitchens just like RPUSH
+- Franchise locations process LPUSH silently, maintaining identical priority ordering
+- Ensures rush orders are prioritized consistently across all restaurant locations
+
+**Practical Restaurant Workflow:**
+1. "RPUSH table7 salad entree dessert" → creates queue [salad, entree, dessert]
+2. "LPUSH table7 urgent_appetizer" → queue becomes [urgent_appetizer, salad, entree, dessert]
+3. "LPUSH table7 allergy_warning vip_special" → queue becomes [vip_special, allergy_warning, urgent_appetizer, salad, entree, dessert]
+4. "LRANGE table7 0 2" → shows the three most urgent items first
+
+**Business Benefits:**
+- Handles VIP customers and urgent dietary requirements efficiently
+- Ensures time-sensitive orders (like birthday surprises) aren't delayed
+- Allows flexible queue management for optimal kitchen workflow
+- Critical for managing customer satisfaction and special requirements
 
 **NEW: Order Queue Viewing System (LRANGE Command)**
 

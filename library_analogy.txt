@@ -31,7 +31,8 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "SET [title] [content]" → stores it in the library's catalog and confirms "OK"**
    - **If they say "SET [title] [content] px [time]" → stores it as a temporary exhibit that expires after the specified time!**
    - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
-   - **If they say "RPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the specified reading list at once and returns total books in that list**
+   - **If they say "RPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the END of the specified reading list and returns total books in that list**
+   - **If they say "LPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the BEGINNING of the specified reading list (urgent reads!) and returns total books in that list**
    - **If they say "LRANGE [reading-list] [start] [stop]" → shows books from the reading list between the start and stop positions (both inclusive)**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
    - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
@@ -1047,6 +1048,39 @@ The library now offers sophisticated batch reading list management for efficient
 - Reduces system traffic for large reading lists (one command vs. many)
 - Works seamlessly alongside existing catalog system (SET/GET) for maximum flexibility
 - Supports both individual book additions and complete collection requirements
+
+**NEW: Urgent Reading List Management (LPUSH - Left Push)**
+
+The library now offers priority book placement for urgent reading requirements:
+
+**Priority Book Placement:**
+- LPUSH adds books to the BEGINNING of reading lists: "LPUSH urgent-research critical-paper1 critical-paper2"
+- Unlike RPUSH which adds to the end, LPUSH is for urgent/priority items that need immediate attention
+- Perfect for deadline-driven research, breaking news articles, or high-priority course materials
+- Multiple books are added in reverse order: "LPUSH list a b c" results in order [c, b, a] at the front
+
+**Use Case Examples:**
+- "LPUSH thesis-research breakthrough-paper" → adds urgent new research to beginning of thesis reading list
+- "LPUSH course-updates exam-notice schedule-change" → puts important updates at the front where they'll be seen first
+- "LPUSH daily-briefing urgent-memo priority-email" → ensures critical items appear first in daily reading
+- Combines with RPUSH for complete list management: urgent items at front (LPUSH), regular items at back (RPUSH)
+
+**Implementation Details:**
+- Uses `list.insert(0, value)` to add each book at position 0 (beginning)
+- When multiple books provided, they're inserted sequentially, resulting in reverse order
+- Returns total list length after all books are added
+- Thread-safe operation coordinated with other list commands
+
+**Branch Library Synchronization:**
+- LPUSH commands are propagated to all branch libraries just like RPUSH
+- Branch libraries process LPUSH silently, maintaining identical priority ordering
+- Ensures urgent materials are prioritized consistently across all library locations
+
+**Practical Workflow:**
+1. "RPUSH research-papers paper1 paper2 paper3" → creates list [paper1, paper2, paper3]
+2. "LPUSH research-papers urgent-finding" → list becomes [urgent-finding, paper1, paper2, paper3]
+3. "LPUSH research-papers breaking-news critical-update" → list becomes [critical-update, breaking-news, urgent-finding, paper1, paper2, paper3]
+4. "LRANGE research-papers 0 2" → shows the three most urgent items first
 
 **NEW: Reading List Browsing System (LRANGE)**
 
