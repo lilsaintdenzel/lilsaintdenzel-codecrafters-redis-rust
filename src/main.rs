@@ -1167,6 +1167,33 @@ fn main() {
                                                     stream.write_all(b"-ERR wrong number of arguments for 'rpush' command\r\n").unwrap();
                                                 }
                                             }
+                                            "LPUSH" => {
+                                                if args.len() >= 3 {
+                                                    let key = &args[1];
+                                                    let values = &args[2..];
+                                                    
+                                                    // Get or create list and prepend all values
+                                                    let list_length = {
+                                                        let mut lists = list_store_clone.lock().unwrap();
+                                                        let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+                                                        for value in values {
+                                                            list.insert(0, value.clone());
+                                                        }
+                                                        list.len()
+                                                    };
+                                                    
+                                                    // Return length as RESP integer
+                                                    let response = format!(":{}\r\n", list_length);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                    
+                                                    // Propagate to replicas if acting as master
+                                                    if config_clone.replicaof.is_none() {
+                                                        propagate_command_to_replicas(&replicas_clone, &args);
+                                                    }
+                                                } else {
+                                                    stream.write_all(b"-ERR wrong number of arguments for 'lpush' command\r\n").unwrap();
+                                                }
+                                            }
                                             "LRANGE" => {
                                                 if args.len() >= 4 {
                                                     let key = &args[1];
