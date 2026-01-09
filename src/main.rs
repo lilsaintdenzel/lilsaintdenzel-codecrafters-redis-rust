@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-// Analogies:
+// Restaurant Analogies:
 // - Redis Server = A restaurant with multiple services
 // - TCP Listener = Restaurant's front door
 // - Client connections = Restaurant tables/customers
@@ -23,6 +23,21 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 //   - Master = Main restaurant location
 //   - Replicas = Branch locations that mirror the main menu
 // - Command propagation = Head chef's recipes sent to all branches
+
+// Library Analogies:
+// - Redis Server = A library with multiple services
+// - TCP Listener = Library's main entrance
+// - Client connections = Library patrons/visitors
+// - SET/GET commands = Storing/retrieving books
+// - Expiry = Books with due dates
+// - Lists (RPUSH/LPUSH/LRANGE) = Reading list management
+//   - RPUSH = Adding books to the end of your reading list
+//   - LPUSH = Urgent reads - adding books to the beginning of your list
+//   - LRANGE = Viewing a portion of your reading list
+// - Replication = Library system with multiple branches
+//   - Master = Central library
+//   - Replicas = Branch libraries that maintain copies of the catalog
+// - Command propagation = Catalog updates sent to all branches
 
 #[derive(Clone)]
 struct StoredValue {
