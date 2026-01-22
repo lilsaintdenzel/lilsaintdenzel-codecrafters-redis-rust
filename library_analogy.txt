@@ -33,6 +33,7 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
    - **If they say "RPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the END of the specified reading list and returns total books in that list**
    - **If they say "LPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the BEGINNING of the specified reading list (urgent reads!) and returns total books in that list**
+   - **If they say "LPOP [reading-list]" → removes and returns the first book from the reading list (checking out the next book to read)**
    - **If they say "LLEN [reading-list]" → returns the total count of books in that reading list (or 0 if list doesn't exist)**
    - **If they say "LRANGE [reading-list] [start] [stop]" → shows books from the reading list between the start and stop positions (both inclusive)**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
@@ -1004,6 +1005,34 @@ Branch libraries now have sophisticated instruction processing capabilities:
 - Better error handling prevents communication breakdowns during high-traffic periods
 - Enhanced buffer management ensures all instructions are processed correctly
 - Maintains perfect synchronization even when receiving multiple simultaneous updates
+
+**NEW: Book Checkout System (LPOP Command)**
+
+The library now offers efficient book checkout from reading lists:
+
+**Checkout Features:**
+- LPOP checks out the next book from any reading list by removing and returning the first item
+- "LPOP summer-reading" → returns "beach-novel" and removes it from the list (now reading it!)
+- Returns null ($-1\r\n) for non-existent or empty lists: "LPOP empty-shelf" → null
+- Perfect for systematic reading - work through your list in order
+
+**Practical Use Cases:**
+- "LPOP books-to-read" → "mystery-novel" (get the next book, mark it as checked out)
+- "LPOP research-queue" → "important-paper" (retrieve the next paper to review)
+- "LPOP course-materials" → "chapter-1" (get the next reading assignment)
+- "LPOP finished-list" → null (nothing left to read!)
+
+**Reading Workflow Integration:**
+- Reader calls LPOP to get the next book to read
+- Book is automatically removed from the queue once retrieved
+- Ensures first-in-first-out (FIFO) reading order
+- Works with LPUSH for urgent reads that jump to the front
+
+**Visitor Benefits:**
+- Systematic reading progress through your list
+- No duplicate reads (book removed on checkout)
+- Clear reading workflow and tracking
+- Supports both regular lists (RPUSH) and priority lists (LPUSH)
 
 **NEW: Reading List Length Inquiry (LLEN Command)**
 

@@ -835,6 +835,7 @@ fn main() {
 - **SET/GET**: Order placement and retrieval with optional timing windows
 - **RPUSH**: "Add item to END of order queue!" → Returns total items in queue (regular queue addition)
 - **LPUSH**: "Add item to FRONT of order queue!" → Returns total items in queue (priority/rush orders!)
+- **LPOP**: "Serve the next customer in line!" → Removes and returns the first item from the queue
 - **LLEN**: "How many items in order queue?" → Returns total count of items in the queue (queue length check)
 - **LRANGE**: "Show me items from order queue!" → Returns items between start and stop positions (inclusive)
 - **CONFIG GET**: Questions about restaurant setup and kitchen location
@@ -1003,6 +1004,34 @@ Franchise locations now have sophisticated order processing capabilities:
 - Better error handling prevents communication breakdowns during rush hours
 - Enhanced buffer management ensures all orders are processed correctly
 - Maintains perfect synchronization even when receiving multiple simultaneous orders
+
+**NEW: Queue Service System (LPOP Command)**
+
+The restaurant now offers efficient queue service for processing orders in sequence:
+
+**Queue Service Features:**
+- LPOP serves the next customer in line by removing and returning the first item from any order queue
+- "LPOP table5" → returns "appetizer" and removes it from the queue (next item to prepare)
+- Returns null ($-1\r\n) for non-existent or empty queues: "LPOP empty_table" → null
+- Perfect for kitchen workflow - process orders in the exact sequence they were received
+
+**Practical Use Cases:**
+- "LPOP kitchen_queue" → "burger" (serve the next order, remove it from queue)
+- "LPOP priority_orders" → "vip_steak" (handle the next priority item)
+- "LPOP table8" → "dessert" (what's the next dish to prepare for table 8?)
+- "LPOP closed_table" → null (no orders for that table)
+
+**Kitchen Workflow Integration:**
+- Chef calls LPOP to get the next order to prepare
+- Item is automatically removed from queue once retrieved
+- Ensures first-in-first-out (FIFO) order processing
+- Works with LPUSH for priority orders that jump to the front
+
+**Business Benefits:**
+- Systematic order processing in arrival sequence
+- No duplicate order preparation (item removed on retrieval)
+- Clear workflow for kitchen staff
+- Supports both regular queues (RPUSH) and priority queues (LPUSH)
 
 **NEW: Queue Length Inquiry System (LLEN Command)**
 
