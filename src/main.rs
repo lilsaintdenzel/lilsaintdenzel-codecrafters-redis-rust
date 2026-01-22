@@ -15,9 +15,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // - Client connections = Restaurant tables/customers
 // - SET/GET commands = Placing/retrieving orders
 // - Expiry = Food with expiration dates
-// - Lists (RPUSH/LPUSH/LRANGE/LLEN) = Queue management system
+// - Lists (RPUSH/LPUSH/LPOP/LRANGE/LLEN) = Queue management system
 //   - RPUSH = Adding people to the back of a queue (like a normal line)
 //   - LPUSH = VIP entrance - adding people to the front of the queue
+//   - LPOP = Serving the next person in line (removes from front)
 //   - LRANGE = Viewing a portion of the queue (like checking who's in line)
 //   - LLEN = Counting how many people are in the queue
 // - Replication = Restaurant chain with multiple locations
@@ -31,9 +32,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // - Client connections = Library patrons/visitors
 // - SET/GET commands = Storing/retrieving books
 // - Expiry = Books with due dates
-// - Lists (RPUSH/LPUSH/LRANGE/LLEN) = Reading list management
+// - Lists (RPUSH/LPUSH/LPOP/LRANGE/LLEN) = Reading list management
 //   - RPUSH = Adding books to the end of your reading list
 //   - LPUSH = Urgent reads - adding books to the beginning of your list
+//   - LPOP = Checking out the next book to read (removes from beginning)
 //   - LRANGE = Viewing a portion of your reading list
 //   - LLEN = Counting how many books are on your reading list
 // - Replication = Library system with multiple branches
@@ -1235,6 +1237,25 @@ fn main() {
                                                     stream.write_all(response.as_bytes()).unwrap();
                                                 } else {
                                                     stream.write_all(b"-ERR wrong number of arguments for 'llen' command\r\n").unwrap();
+                                                }
+                                            }
+                                            "LPOP" => {
+                                                if args.len() >= 2 {
+                                                    let key = &args[1];
+                                                    let mut lists = list_store_clone.lock().unwrap();
+                                                    match lists.get_mut(key) {
+                                                        Some(list) if !list.is_empty() => {
+                                                            let element = list.remove(0);
+                                                            let response = format!("${}\r\n{}\r\n", element.len(), element);
+                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                        }
+                                                        _ => {
+                                                            // List doesn't exist or is empty
+                                                            stream.write_all(b"$-1\r\n").unwrap();
+                                                        }
+                                                    }
+                                                } else {
+                                                    stream.write_all(b"-ERR wrong number of arguments for 'lpop' command\r\n").unwrap();
                                                 }
                                             }
                                             "LRANGE" => {
