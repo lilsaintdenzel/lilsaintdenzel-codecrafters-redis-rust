@@ -1242,12 +1242,33 @@ fn main() {
                                             "LPOP" => {
                                                 if args.len() >= 2 {
                                                     let key = &args[1];
+                                                    let count: Option<usize> = if args.len() >= 3 {
+                                                        args[2].parse().ok()
+                                                    } else {
+                                                        None
+                                                    };
+
                                                     let mut lists = list_store_clone.lock().unwrap();
                                                     match lists.get_mut(key) {
                                                         Some(list) if !list.is_empty() => {
-                                                            let element = list.remove(0);
-                                                            let response = format!("${}\r\n{}\r\n", element.len(), element);
-                                                            stream.write_all(response.as_bytes()).unwrap();
+                                                            match count {
+                                                                Some(n) => {
+                                                                    // Remove multiple elements, return as array
+                                                                    let remove_count = n.min(list.len());
+                                                                    let removed: Vec<String> = list.drain(0..remove_count).collect();
+                                                                    let mut response = format!("*{}\r\n", removed.len());
+                                                                    for element in &removed {
+                                                                        response.push_str(&format!("${}\r\n{}\r\n", element.len(), element));
+                                                                    }
+                                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                                }
+                                                                None => {
+                                                                    // Single element, return as bulk string
+                                                                    let element = list.remove(0);
+                                                                    let response = format!("${}\r\n{}\r\n", element.len(), element);
+                                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                                }
+                                                            }
                                                         }
                                                         _ => {
                                                             // List doesn't exist or is empty
