@@ -1016,21 +1016,31 @@ The library now offers efficient book checkout from reading lists:
 - Returns null ($-1\r\n) for non-existent or empty lists: "LPOP empty-shelf" → null
 - Perfect for systematic reading - work through your list in order
 
+**Batch Checkout (LPOP with count):**
+- LPOP now supports checking out multiple books at once: "LPOP reading-list 3" → returns array of first 3 books
+- Perfect for weekend reading trips or vacation book hauls
+- "LPOP summer-reading 5" → returns ["novel1", "novel2", "novel3", "novel4", "novel5"] (grab 5 books at once)
+- If count exceeds list length, returns all available books
+- Returns as RESP array when count is specified
+
 **Practical Use Cases:**
 - "LPOP books-to-read" → "mystery-novel" (get the next book, mark it as checked out)
+- "LPOP books-to-read 3" → ["mystery", "thriller", "romance"] (checkout 3 books for the weekend)
 - "LPOP research-queue" → "important-paper" (retrieve the next paper to review)
-- "LPOP course-materials" → "chapter-1" (get the next reading assignment)
+- "LPOP course-materials 4" → ["ch1", "ch2", "ch3", "ch4"] (get first 4 chapters for study session)
 - "LPOP finished-list" → null (nothing left to read!)
 
 **Reading Workflow Integration:**
 - Reader calls LPOP to get the next book to read
+- Use count argument for batch checkouts (vacations, study sessions)
 - Book is automatically removed from the queue once retrieved
 - Ensures first-in-first-out (FIFO) reading order
 - Works with LPUSH for urgent reads that jump to the front
 
 **Visitor Benefits:**
 - Systematic reading progress through your list
-- No duplicate reads (book removed on checkout)
+- Batch checkout for convenience
+- No duplicate reads (books removed on checkout)
 - Clear reading workflow and tracking
 - Supports both regular lists (RPUSH) and priority lists (LPUSH)
 

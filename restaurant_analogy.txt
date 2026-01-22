@@ -1015,21 +1015,31 @@ The restaurant now offers efficient queue service for processing orders in seque
 - Returns null ($-1\r\n) for non-existent or empty queues: "LPOP empty_table" → null
 - Perfect for kitchen workflow - process orders in the exact sequence they were received
 
+**Batch Order Processing (LPOP with count):**
+- LPOP now supports removing multiple items at once: "LPOP table5 3" → returns array of first 3 items
+- Perfect for batch cooking or multi-course meal preparation
+- "LPOP kitchen_queue 5" → returns ["burger", "fries", "salad", "soup", "drink"] (grab 5 orders at once)
+- If count exceeds queue length, returns all available items
+- Returns as RESP array when count is specified
+
 **Practical Use Cases:**
 - "LPOP kitchen_queue" → "burger" (serve the next order, remove it from queue)
+- "LPOP kitchen_queue 4" → ["burger", "fries", "salad", "soup"] (batch process 4 orders)
 - "LPOP priority_orders" → "vip_steak" (handle the next priority item)
-- "LPOP table8" → "dessert" (what's the next dish to prepare for table 8?)
+- "LPOP table8 2" → ["appetizer", "soup"] (prepare first two courses together)
 - "LPOP closed_table" → null (no orders for that table)
 
 **Kitchen Workflow Integration:**
 - Chef calls LPOP to get the next order to prepare
+- Use count argument for batch cooking efficiency
 - Item is automatically removed from queue once retrieved
 - Ensures first-in-first-out (FIFO) order processing
 - Works with LPUSH for priority orders that jump to the front
 
 **Business Benefits:**
 - Systematic order processing in arrival sequence
-- No duplicate order preparation (item removed on retrieval)
+- Batch processing for improved kitchen efficiency
+- No duplicate order preparation (items removed on retrieval)
 - Clear workflow for kitchen staff
 - Supports both regular queues (RPUSH) and priority queues (LPUSH)
 
