@@ -33,6 +33,7 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "GET [title]" → looks up the title in the catalog and provides the content (or "not found" if expired)**
    - **If they say "RPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the END of the specified reading list and returns total books in that list**
    - **If they say "LPUSH [reading-list] [book1] [book2] [book3]..." → adds multiple books to the BEGINNING of the specified reading list (urgent reads!) and returns total books in that list**
+   - **If they say "LLEN [reading-list]" → returns the total count of books in that reading list (or 0 if list doesn't exist)**
    - **If they say "LRANGE [reading-list] [start] [stop]" → shows books from the reading list between the start and stop positions (both inclusive)**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
    - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
@@ -1003,6 +1004,28 @@ Branch libraries now have sophisticated instruction processing capabilities:
 - Better error handling prevents communication breakdowns during high-traffic periods
 - Enhanced buffer management ensures all instructions are processed correctly
 - Maintains perfect synchronization even when receiving multiple simultaneous updates
+
+**NEW: Reading List Length Inquiry (LLEN Command)**
+
+The library now offers instant reading list size checking for efficient collection management:
+
+**List Length Features:**
+- LLEN allows visitors to instantly check how many books are in any reading list: "LLEN summer-reading" → ":12\r\n" (12 books)
+- Returns 0 for non-existent lists: "LLEN unknown-list" → ":0\r\n" (no such list)
+- Perfect for progress tracking and collection planning
+- Instant response without needing to view the entire list contents
+
+**Practical Use Cases:**
+- "LLEN thesis-bibliography" → "47" (47 sources collected for thesis)
+- "LLEN books-to-read" → "23" (23 books on the to-read list)
+- "LLEN completed-this-year" → "15" (15 books finished this year)
+- "LLEN empty-shelf" → "0" (no books on that shelf)
+
+**Visitor Benefits:**
+- Quickly check reading list progress without viewing all titles
+- Track collection sizes for research projects
+- Monitor reading goals and targets
+- Compare list sizes across different categories
 
 **NEW: Advanced Reading List Management System (RPUSH with Multiple Books)**
 

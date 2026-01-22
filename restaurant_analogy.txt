@@ -835,6 +835,7 @@ fn main() {
 - **SET/GET**: Order placement and retrieval with optional timing windows
 - **RPUSH**: "Add item to END of order queue!" → Returns total items in queue (regular queue addition)
 - **LPUSH**: "Add item to FRONT of order queue!" → Returns total items in queue (priority/rush orders!)
+- **LLEN**: "How many items in order queue?" → Returns total count of items in the queue (queue length check)
 - **LRANGE**: "Show me items from order queue!" → Returns items between start and stop positions (inclusive)
 - **CONFIG GET**: Questions about restaurant setup and kitchen location
 - **KEYS**: "What's on the menu?" with search capabilities
@@ -1002,6 +1003,28 @@ Franchise locations now have sophisticated order processing capabilities:
 - Better error handling prevents communication breakdowns during rush hours
 - Enhanced buffer management ensures all orders are processed correctly
 - Maintains perfect synchronization even when receiving multiple simultaneous orders
+
+**NEW: Queue Length Inquiry System (LLEN Command)**
+
+The restaurant now offers instant queue size checking for efficient workflow management:
+
+**Queue Length Features:**
+- LLEN allows staff to instantly check how many items are in any order queue: "LLEN table5" → ":4\r\n" (4 items queued)
+- Returns 0 for non-existent queues: "LLEN unknown_table" → ":0\r\n" (no such queue)
+- Perfect for capacity planning and workflow management
+- Instant response without needing to view the entire queue contents
+
+**Practical Use Cases:**
+- "LLEN table8" → "4" (table 8 has 4 items in their order queue)
+- "LLEN kitchen_priority" → "7" (7 priority items waiting)
+- "LLEN catering_event" → "25" (large event with 25 queued items)
+- "LLEN empty_table" → "0" (no orders for that table)
+
+**Business Benefits:**
+- Quickly assess workload without viewing full queue details
+- Help with load balancing across kitchen stations
+- Estimate wait times based on queue sizes
+- Monitor event order progress efficiently
 
 **NEW: Advanced Queue-Based Order System (RPUSH Command with Multiple Items)**
 
