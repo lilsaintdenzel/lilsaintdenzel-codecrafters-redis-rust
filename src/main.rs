@@ -15,10 +15,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // - Client connections = Restaurant tables/customers
 // - SET/GET commands = Placing/retrieving orders
 // - Expiry = Food with expiration dates
-// - Lists (RPUSH/LPUSH/LRANGE) = Queue management system
+// - Lists (RPUSH/LPUSH/LRANGE/LLEN) = Queue management system
 //   - RPUSH = Adding people to the back of a queue (like a normal line)
 //   - LPUSH = VIP entrance - adding people to the front of the queue
 //   - LRANGE = Viewing a portion of the queue (like checking who's in line)
+//   - LLEN = Counting how many people are in the queue
 // - Replication = Restaurant chain with multiple locations
 //   - Master = Main restaurant location
 //   - Replicas = Branch locations that mirror the main menu
@@ -30,10 +31,11 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 // - Client connections = Library patrons/visitors
 // - SET/GET commands = Storing/retrieving books
 // - Expiry = Books with due dates
-// - Lists (RPUSH/LPUSH/LRANGE) = Reading list management
+// - Lists (RPUSH/LPUSH/LRANGE/LLEN) = Reading list management
 //   - RPUSH = Adding books to the end of your reading list
 //   - LPUSH = Urgent reads - adding books to the beginning of your list
 //   - LRANGE = Viewing a portion of your reading list
+//   - LLEN = Counting how many books are on your reading list
 // - Replication = Library system with multiple branches
 //   - Master = Central library
 //   - Replicas = Branch libraries that maintain copies of the catalog
@@ -1222,6 +1224,17 @@ fn main() {
                                                     }
                                                 } else {
                                                     stream.write_all(b"-ERR wrong number of arguments for 'lpush' command\r\n").unwrap();
+                                                }
+                                            }
+                                            "LLEN" => {
+                                                if args.len() >= 2 {
+                                                    let key = &args[1];
+                                                    let lists = list_store_clone.lock().unwrap();
+                                                    let length = lists.get(key).map_or(0, |list| list.len());
+                                                    let response = format!(":{}\r\n", length);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                } else {
+                                                    stream.write_all(b"-ERR wrong number of arguments for 'llen' command\r\n").unwrap();
                                                 }
                                             }
                                             "LRANGE" => {
