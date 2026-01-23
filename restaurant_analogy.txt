@@ -1050,8 +1050,18 @@ The restaurant now offers a sophisticated waiting system for customers who want 
 **Blocking Wait Features:**
 - BLPOP allows customers to wait at an empty counter until their requested item becomes available
 - "BLPOP kitchen_queue 0" → Customer waits indefinitely until something is ready to serve
+- "BLPOP kitchen_queue 0.5" → Customer waits up to 0.5 seconds, then leaves if nothing is ready
 - When an item becomes available, the customer receives both the queue name and the item: ["kitchen_queue", "burger"]
+- If timeout expires without food ready, customer receives null response (nothing available)
 - Perfect for busy restaurants where customers want to be served the moment food is ready
+
+**Timeout Functionality:**
+- Timeout is specified in seconds (can be decimal: 0.1, 0.5, 1.5, etc.)
+- "BLPOP counter 0" → Wait forever (no timeout)
+- "BLPOP counter 0.2" → Wait up to 200 milliseconds
+- "BLPOP counter 5" → Wait up to 5 seconds
+- When timeout expires: customer receives null (*-1\r\n) meaning "nothing available in time"
+- When food arrives before timeout: customer receives ["counter", "food_item"]
 
 **How It Works:**
 - Customer arrives at empty counter: "BLPOP order_queue 0" (waits at order_queue counter)

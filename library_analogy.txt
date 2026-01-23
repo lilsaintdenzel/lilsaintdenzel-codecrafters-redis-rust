@@ -1051,8 +1051,18 @@ The library now offers a sophisticated hold system for visitors who want to be n
 **Blocking Wait Features:**
 - BLPOP allows visitors to wait at the hold shelf until their requested book arrives
 - "BLPOP hold_shelf 0" → Visitor waits indefinitely until a book becomes available
+- "BLPOP hold_shelf 0.5" → Visitor waits up to 0.5 seconds, then leaves if no book arrives
 - When a book arrives, the visitor receives both the shelf name and the book: ["hold_shelf", "requested_novel"]
+- If timeout expires without a book arriving, visitor receives null response (nothing available)
 - Perfect for popular books where visitors want to be first in line
+
+**Timeout Functionality:**
+- Timeout is specified in seconds (can be decimal: 0.1, 0.5, 1.5, etc.)
+- "BLPOP shelf 0" → Wait forever (no timeout)
+- "BLPOP shelf 0.2" → Wait up to 200 milliseconds
+- "BLPOP shelf 5" → Wait up to 5 seconds
+- When timeout expires: visitor receives null (*-1\r\n) meaning "no book available in time"
+- When book arrives before timeout: visitor receives ["shelf", "book_title"]
 
 **How It Works:**
 - Visitor places hold request: "BLPOP new_releases 0" (waits at new_releases shelf)
