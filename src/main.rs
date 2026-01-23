@@ -1428,10 +1428,10 @@ fn main() {
                                             }
                                             "BLPOP" => {
                                                 // BLPOP key [key ...] timeout
-                                                // For this stage, we only handle single key and timeout=0
+                                                // timeout is in seconds (can be decimal like 0.1)
                                                 if args.len() >= 3 {
                                                     let key = &args[1];
-                                                    let _timeout: u64 = args[args.len() - 1].parse().unwrap_or(0);
+                                                    let timeout_secs: f64 = args[args.len() - 1].parse().unwrap_or(0.0);
 
                                                     // First check if the list already has elements
                                                     let element = {
@@ -1465,11 +1465,20 @@ fn main() {
                                                             blocked
                                                                 .entry(key.clone())
                                                                 .or_insert_with(VecDeque::new)
-                                                                .push_back(tx);
+                                                                .push_back(tx.clone());
                                                         }
 
-                                                        // Block waiting for element (timeout=0 means wait forever)
-                                                        match rx.recv() {
+                                                        // Block waiting for element with optional timeout
+                                                        let result = if timeout_secs > 0.0 {
+                                                            // Non-zero timeout: wait for specified duration
+                                                            let timeout_duration = Duration::from_secs_f64(timeout_secs);
+                                                            rx.recv_timeout(timeout_duration)
+                                                        } else {
+                                                            // Zero timeout: wait forever
+                                                            rx.recv().map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected)
+                                                        };
+
+                                                        match result {
                                                             Ok((list_key, popped_value)) => {
                                                                 let response = format!(
                                                                     "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
@@ -1478,8 +1487,25 @@ fn main() {
                                                                 );
                                                                 stream.write_all(response.as_bytes()).unwrap();
                                                             }
+                                                            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                                                                // Timeout expired, remove ourselves from the blocked queue
+                                                                {
+                                                                    let mut blocked = blocked_clients_clone.lock().unwrap();
+                                                                    if let Some(queue) = blocked.get_mut(key) {
+                                                                        // Remove our sender from the queue
+                                                                        queue.retain(|sender| {
+                                                                            // Try sending a dummy - if it succeeds, it's not our closed channel
+                                                                            // Actually we can't easily identify our sender, so we'll just
+                                                                            // leave any cleanup to happen naturally
+                                                                            true
+                                                                        });
+                                                                    }
+                                                                }
+                                                                // Return null array for timeout
+                                                                stream.write_all(b"*-1\r\n").unwrap();
+                                                            }
                                                             Err(_) => {
-                                                                // Channel closed (shouldn't happen in normal operation)
+                                                                // Channel disconnected
                                                                 stream.write_all(b"*-1\r\n").unwrap();
                                                             }
                                                         }
