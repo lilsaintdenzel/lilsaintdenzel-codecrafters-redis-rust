@@ -1,10 +1,11 @@
 #![allow(unused_imports)]
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::fs::File;
 use std::io::{BufReader, Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::Path;
+use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -19,6 +20,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 //   - RPUSH = Adding people to the back of a queue (like a normal line)
 //   - LPUSH = VIP entrance - adding people to the front of the queue
 //   - LPOP = Serving the next person in line (removes from front)
+//   - BLPOP = Waiting at an empty counter until food arrives (blocks until available)
 //   - LRANGE = Viewing a portion of the queue (like checking who's in line)
 //   - LLEN = Counting how many people are in the queue
 // - Replication = Restaurant chain with multiple locations
@@ -36,6 +38,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 //   - RPUSH = Adding books to the end of your reading list
 //   - LPUSH = Urgent reads - adding books to the beginning of your list
 //   - LPOP = Checking out the next book to read (removes from beginning)
+//   - BLPOP = Waiting at the hold shelf until your requested book arrives (blocks until available)
 //   - LRANGE = Viewing a portion of your reading list
 //   - LLEN = Counting how many books are on your reading list
 // - Replication = Library system with multiple branches
@@ -59,6 +62,9 @@ struct Config {
 
 type ReplicaConnections = Arc<Mutex<Vec<TcpStream>>>;
 type MasterOffset = Arc<Mutex<u64>>;
+// BlockedClients maps a list key to a queue of waiting clients (FIFO order)
+// Each client has a channel sender to receive (list_key, popped_element)
+type BlockedClients = Arc<Mutex<HashMap<String, VecDeque<mpsc::Sender<(String, String)>>>>>;
 
 fn propagate_command_to_replicas(replicas: &ReplicaConnections, command: &[String]) {
     let mut replicas_guard = replicas.lock().unwrap();
@@ -575,6 +581,7 @@ fn main() {
     let list_store = Arc::new(Mutex::new(HashMap::<String, Vec<String>>::new()));
     let replica_connections: ReplicaConnections = Arc::new(Mutex::new(Vec::new()));
     let master_offset: MasterOffset = Arc::new(Mutex::new(0));
+    let blocked_clients: BlockedClients = Arc::new(Mutex::new(HashMap::new()));
     
     // If this is a replica, connect to master and perform handshake
     if let Some((master_host, master_port)) = &config.replicaof {
@@ -882,6 +889,7 @@ fn main() {
                 let list_store_clone = Arc::clone(&list_store);
                 let replicas_clone = Arc::clone(&replica_connections);
                 let master_offset_clone = Arc::clone(&master_offset);
+                let blocked_clients_clone = Arc::clone(&blocked_clients);
                 let config_clone = config.clone();
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
@@ -1178,21 +1186,47 @@ fn main() {
                                                 if args.len() >= 3 {
                                                     let key = &args[1];
                                                     let values = &args[2..];
-                                                    
-                                                    // Get or create list and append all values
+
+                                                    // Collect senders to notify after releasing locks
+                                                    let mut to_notify: Vec<(mpsc::Sender<(String, String)>, String)> = Vec::new();
+
+                                                    // Get or create list and append values
                                                     let list_length = {
                                                         let mut lists = list_store_clone.lock().unwrap();
+                                                        let mut blocked = blocked_clients_clone.lock().unwrap();
+
                                                         let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+
                                                         for value in values {
+                                                            // Check if there's a blocked client waiting for this key
+                                                            if let Some(queue) = blocked.get_mut(key) {
+                                                                if let Some(sender) = queue.pop_front() {
+                                                                    // Wake up the blocked client with this value
+                                                                    to_notify.push((sender, value.clone()));
+                                                                    continue;
+                                                                }
+                                                            }
+                                                            // No blocked clients, add to list
                                                             list.push(value.clone());
                                                         }
-                                                        list.len()
+
+                                                        // Clean up empty queues
+                                                        if blocked.get(key).map_or(false, |q| q.is_empty()) {
+                                                            blocked.remove(key);
+                                                        }
+
+                                                        list.len() + to_notify.len()
                                                     };
-                                                    
+
+                                                    // Notify blocked clients after releasing locks
+                                                    for (sender, value) in to_notify {
+                                                        let _ = sender.send((key.clone(), value));
+                                                    }
+
                                                     // Return length as RESP integer
                                                     let response = format!(":{}\r\n", list_length);
                                                     stream.write_all(response.as_bytes()).unwrap();
-                                                    
+
                                                     // Propagate to replicas if acting as master
                                                     if config_clone.replicaof.is_none() {
                                                         propagate_command_to_replicas(&replicas_clone, &args);
@@ -1205,21 +1239,47 @@ fn main() {
                                                 if args.len() >= 3 {
                                                     let key = &args[1];
                                                     let values = &args[2..];
-                                                    
-                                                    // Get or create list and prepend all values
+
+                                                    // Collect senders to notify after releasing locks
+                                                    let mut to_notify: Vec<(mpsc::Sender<(String, String)>, String)> = Vec::new();
+
+                                                    // Get or create list and prepend values
                                                     let list_length = {
                                                         let mut lists = list_store_clone.lock().unwrap();
+                                                        let mut blocked = blocked_clients_clone.lock().unwrap();
+
                                                         let list = lists.entry(key.clone()).or_insert_with(Vec::new);
+
                                                         for value in values {
+                                                            // Check if there's a blocked client waiting for this key
+                                                            if let Some(queue) = blocked.get_mut(key) {
+                                                                if let Some(sender) = queue.pop_front() {
+                                                                    // Wake up the blocked client with this value
+                                                                    to_notify.push((sender, value.clone()));
+                                                                    continue;
+                                                                }
+                                                            }
+                                                            // No blocked clients, add to front of list
                                                             list.insert(0, value.clone());
                                                         }
-                                                        list.len()
+
+                                                        // Clean up empty queues
+                                                        if blocked.get(key).map_or(false, |q| q.is_empty()) {
+                                                            blocked.remove(key);
+                                                        }
+
+                                                        list.len() + to_notify.len()
                                                     };
-                                                    
+
+                                                    // Notify blocked clients after releasing locks
+                                                    for (sender, value) in to_notify {
+                                                        let _ = sender.send((key.clone(), value));
+                                                    }
+
                                                     // Return length as RESP integer
                                                     let response = format!(":{}\r\n", list_length);
                                                     stream.write_all(response.as_bytes()).unwrap();
-                                                    
+
                                                     // Propagate to replicas if acting as master
                                                     if config_clone.replicaof.is_none() {
                                                         propagate_command_to_replicas(&replicas_clone, &args);
@@ -1364,6 +1424,68 @@ fn main() {
                                                     }
                                                 } else {
                                                     stream.write_all(b"-ERR wrong number of arguments for 'lrange' command\r\n").unwrap();
+                                                }
+                                            }
+                                            "BLPOP" => {
+                                                // BLPOP key [key ...] timeout
+                                                // For this stage, we only handle single key and timeout=0
+                                                if args.len() >= 3 {
+                                                    let key = &args[1];
+                                                    let _timeout: u64 = args[args.len() - 1].parse().unwrap_or(0);
+
+                                                    // First check if the list already has elements
+                                                    let element = {
+                                                        let mut lists = list_store_clone.lock().unwrap();
+                                                        if let Some(list) = lists.get_mut(key) {
+                                                            if !list.is_empty() {
+                                                                Some(list.remove(0))
+                                                            } else {
+                                                                None
+                                                            }
+                                                        } else {
+                                                            None
+                                                        }
+                                                    };
+
+                                                    if let Some(elem) = element {
+                                                        // List had an element, return immediately
+                                                        let response = format!(
+                                                            "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
+                                                            key.len(), key,
+                                                            elem.len(), elem
+                                                        );
+                                                        stream.write_all(response.as_bytes()).unwrap();
+                                                    } else {
+                                                        // List is empty or doesn't exist, block until element is available
+                                                        let (tx, rx) = mpsc::channel::<(String, String)>();
+
+                                                        // Add this client to the blocked queue for this key
+                                                        {
+                                                            let mut blocked = blocked_clients_clone.lock().unwrap();
+                                                            blocked
+                                                                .entry(key.clone())
+                                                                .or_insert_with(VecDeque::new)
+                                                                .push_back(tx);
+                                                        }
+
+                                                        // Block waiting for element (timeout=0 means wait forever)
+                                                        match rx.recv() {
+                                                            Ok((list_key, popped_value)) => {
+                                                                let response = format!(
+                                                                    "*2\r\n${}\r\n{}\r\n${}\r\n{}\r\n",
+                                                                    list_key.len(), list_key,
+                                                                    popped_value.len(), popped_value
+                                                                );
+                                                                stream.write_all(response.as_bytes()).unwrap();
+                                                            }
+                                                            Err(_) => {
+                                                                // Channel closed (shouldn't happen in normal operation)
+                                                                stream.write_all(b"*-1\r\n").unwrap();
+                                                            }
+                                                        }
+                                                    }
+                                                } else {
+                                                    stream.write_all(b"-ERR wrong number of arguments for 'blpop' command\r\n").unwrap();
                                                 }
                                             }
                                             _ => {
