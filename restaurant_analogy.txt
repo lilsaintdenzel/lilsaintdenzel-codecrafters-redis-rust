@@ -1043,6 +1043,49 @@ The restaurant now offers efficient queue service for processing orders in seque
 - Clear workflow for kitchen staff
 - Supports both regular queues (RPUSH) and priority queues (LPUSH)
 
+**NEW: Waiting Customer Service System (BLPOP Command)**
+
+The restaurant now offers a sophisticated waiting system for customers who want to be served as soon as items become available:
+
+**Blocking Wait Features:**
+- BLPOP allows customers to wait at an empty counter until their requested item becomes available
+- "BLPOP kitchen_queue 0" → Customer waits indefinitely until something is ready to serve
+- When an item becomes available, the customer receives both the queue name and the item: ["kitchen_queue", "burger"]
+- Perfect for busy restaurants where customers want to be served the moment food is ready
+
+**How It Works:**
+- Customer arrives at empty counter: "BLPOP order_queue 0" (waits at order_queue counter)
+- Kitchen staff adds item: "RPUSH order_queue fresh_burger"
+- Waiting customer immediately receives: ["order_queue", "fresh_burger"]
+- The item is removed from the queue and given directly to the waiting customer
+
+**Multiple Waiting Customers (FIFO Order):**
+- Multiple customers can wait at the same counter
+- First customer to start waiting gets served first (fair queuing)
+- Example sequence:
+  1. Customer A: "BLPOP counter1 0" (starts waiting first)
+  2. Customer B: "BLPOP counter1 0" (starts waiting second)
+  3. Kitchen: "RPUSH counter1 item1" → Customer A receives ["counter1", "item1"]
+  4. Kitchen: "RPUSH counter1 item2" → Customer B receives ["counter1", "item2"]
+
+**Restaurant Workflow Integration:**
+- Eliminates polling: customers don't repeatedly ask "Is my food ready?"
+- Efficient resource usage: waiters can do other tasks while customers wait
+- Instant service: the moment food is ready, waiting customer is served
+- Fair ordering: longest-waiting customer served first
+
+**Practical Use Cases:**
+- "BLPOP takeout_counter 0" → Wait for takeout order to be ready
+- "BLPOP vip_service 0" → VIP customer waits for personalized service
+- "BLPOP drink_bar 0" → Wait for bartender to prepare drink
+- Multiple queues support: Customer can wait on multiple counters simultaneously
+
+**Business Benefits:**
+- Improved customer experience - no repeated "is it ready?" questions
+- Better kitchen coordination - serve customers the instant food is ready
+- Fair queuing system - first-come-first-served guaranteed
+- Reduced wait time perception - customers know they'll be served immediately when ready
+
 **NEW: Queue Length Inquiry System (LLEN Command)**
 
 The restaurant now offers instant queue size checking for efficient workflow management:

@@ -1044,6 +1044,49 @@ The library now offers efficient book checkout from reading lists:
 - Clear reading workflow and tracking
 - Supports both regular lists (RPUSH) and priority lists (LPUSH)
 
+**NEW: Book Hold Waiting System (BLPOP Command)**
+
+The library now offers a sophisticated hold system for visitors who want to be notified the moment a requested book becomes available:
+
+**Blocking Wait Features:**
+- BLPOP allows visitors to wait at the hold shelf until their requested book arrives
+- "BLPOP hold_shelf 0" → Visitor waits indefinitely until a book becomes available
+- When a book arrives, the visitor receives both the shelf name and the book: ["hold_shelf", "requested_novel"]
+- Perfect for popular books where visitors want to be first in line
+
+**How It Works:**
+- Visitor places hold request: "BLPOP new_releases 0" (waits at new_releases shelf)
+- Library adds book: "RPUSH new_releases latest_bestseller"
+- Waiting visitor immediately receives: ["new_releases", "latest_bestseller"]
+- The book is removed from the shelf and given directly to the waiting visitor
+
+**Multiple Waiting Visitors (FIFO Order):**
+- Multiple visitors can wait for the same shelf/list
+- First visitor to start waiting gets the book first (fair queuing)
+- Example sequence:
+  1. Visitor A: "BLPOP popular_fiction 0" (starts waiting first)
+  2. Visitor B: "BLPOP popular_fiction 0" (starts waiting second)
+  3. Library: "RPUSH popular_fiction mystery_novel" → Visitor A receives ["popular_fiction", "mystery_novel"]
+  4. Library: "RPUSH popular_fiction romance_novel" → Visitor B receives ["popular_fiction", "romance_novel"]
+
+**Library Workflow Integration:**
+- Eliminates polling: visitors don't repeatedly ask "Is my book ready?"
+- Efficient resource usage: librarians can do other tasks while visitors wait
+- Instant notification: the moment a book arrives, waiting visitor is served
+- Fair ordering: longest-waiting visitor served first
+
+**Practical Use Cases:**
+- "BLPOP hold_shelf 0" → Wait for any held book to arrive
+- "BLPOP new_arrivals 0" → Be first to get newly arrived books
+- "BLPOP inter_library_loans 0" → Wait for inter-library loan to arrive
+- Multiple lists support: Visitor can wait on multiple shelves simultaneously
+
+**Visitor Benefits:**
+- Improved experience - no repeated "is my book ready?" questions
+- Better library coordination - serve visitors the instant books arrive
+- Fair hold system - first-come-first-served guaranteed
+- Reduced perceived wait time - visitors know they'll be served immediately when book arrives
+
 **NEW: Reading List Length Inquiry (LLEN Command)**
 
 The library now offers instant reading list size checking for efficient collection management:
