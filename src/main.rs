@@ -1124,76 +1124,57 @@ fn main() {
                                                                     }
                                                                 }
 
-                                                                // Use channel to collect ACK results from threads
-                                                                let (tx, rx) = mpsc::channel::<(TcpStream, bool)>();
                                                                 let ack_threshold = current_offset;
+                                                                let read_timeout = timeout_duration.min(Duration::from_millis(1000));
 
                                                                 // Spawn threads to read from each replica in parallel
-                                                                for mut replica in replicas_to_read {
-                                                                    let tx_clone = tx.clone();
-                                                                    let read_timeout = timeout_duration.min(Duration::from_millis(1000));
-                                                                    thread::spawn(move || {
-                                                                        replica.set_read_timeout(Some(read_timeout)).ok();
-                                                                        let mut ack_buffer = [0; 1024];
-                                                                        let acked = match replica.read(&mut ack_buffer) {
-                                                                            Ok(ack_n) => {
-                                                                                if let Some(ack_args) = parse_redis_command(&ack_buffer, ack_n) {
-                                                                                    if ack_args.len() >= 3 &&
-                                                                                       ack_args[0].to_uppercase() == "REPLCONF" &&
-                                                                                       ack_args[1].to_uppercase() == "ACK" {
-                                                                                        if let Ok(replica_offset) = ack_args[2].parse::<u64>() {
-                                                                                            replica_offset >= ack_threshold
+                                                                // Each thread returns (stream, acked) so we can recover all streams
+                                                                let handles: Vec<_> = replicas_to_read
+                                                                    .into_iter()
+                                                                    .map(|mut replica| {
+                                                                        thread::spawn(move || {
+                                                                            replica.set_read_timeout(Some(read_timeout)).ok();
+                                                                            let mut ack_buffer = [0; 1024];
+                                                                            let acked = match replica.read(&mut ack_buffer) {
+                                                                                Ok(ack_n) => {
+                                                                                    if let Some(ack_args) = parse_redis_command(&ack_buffer, ack_n) {
+                                                                                        if ack_args.len() >= 3 &&
+                                                                                           ack_args[0].to_uppercase() == "REPLCONF" &&
+                                                                                           ack_args[1].to_uppercase() == "ACK" {
+                                                                                            if let Ok(replica_offset) = ack_args[2].parse::<u64>() {
+                                                                                                replica_offset >= ack_threshold
+                                                                                            } else {
+                                                                                                false
+                                                                                            }
                                                                                         } else {
                                                                                             false
                                                                                         }
                                                                                     } else {
                                                                                         false
                                                                                     }
-                                                                                } else {
-                                                                                    false
                                                                                 }
-                                                                            }
-                                                                            Err(_) => false,
-                                                                        };
-                                                                        replica.set_read_timeout(None).ok();
-                                                                        let _ = tx_clone.send((replica, acked));
-                                                                    });
-                                                                }
-                                                                drop(tx); // Drop original sender so rx knows when all threads are done
+                                                                                Err(_) => false,
+                                                                            };
+                                                                            replica.set_read_timeout(None).ok();
+                                                                            (replica, acked)
+                                                                        })
+                                                                    })
+                                                                    .collect();
 
-                                                                // Collect results with timeout
+                                                                // Wait for all threads with overall timeout
+                                                                // Threads have read_timeout set, so they should complete within that time
                                                                 let mut ack_count = 0u32;
                                                                 let mut returned_replicas = Vec::new();
 
-                                                                loop {
-                                                                    let remaining = timeout_duration.saturating_sub(start_time.elapsed());
-                                                                    if remaining.is_zero() {
-                                                                        break;
+                                                                for handle in handles {
+                                                                    // Join will wait until the thread completes
+                                                                    // Since threads have read_timeout, they won't block forever
+                                                                    if let Ok((replica, acked)) = handle.join() {
+                                                                        if acked {
+                                                                            ack_count += 1;
+                                                                        }
+                                                                        returned_replicas.push(replica);
                                                                     }
-
-                                                                    match rx.recv_timeout(remaining) {
-                                                                        Ok((replica, acked)) => {
-                                                                            if acked {
-                                                                                ack_count += 1;
-                                                                            }
-                                                                            returned_replicas.push(replica);
-                                                                            // Early return if we have enough ACKs
-                                                                            if ack_count >= numreplicas {
-                                                                                break;
-                                                                            }
-                                                                        }
-                                                                        Err(mpsc::RecvTimeoutError::Timeout) => {
-                                                                            break;
-                                                                        }
-                                                                        Err(mpsc::RecvTimeoutError::Disconnected) => {
-                                                                            break;
-                                                                        }
-                                                                    }
-                                                                }
-
-                                                                // Collect any remaining replicas that finished after timeout
-                                                                while let Ok((replica, _)) = rx.try_recv() {
-                                                                    returned_replicas.push(replica);
                                                                 }
 
                                                                 // Restore replicas
