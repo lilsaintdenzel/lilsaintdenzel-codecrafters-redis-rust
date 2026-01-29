@@ -1514,6 +1514,29 @@ fn main() {
                                                     stream.write_all(b"-ERR wrong number of arguments for 'blpop' command\r\n").unwrap();
                                                 }
                                             }
+                                            "TYPE" => {
+                                                if args.len() >= 2 {
+                                                    let key = &args[1];
+
+                                                    // Check if key exists in string store
+                                                    let store = store_clone.lock().unwrap();
+                                                    if store.contains_key(key) {
+                                                        drop(store);
+                                                        stream.write_all(b"+string\r\n").unwrap();
+                                                    } else {
+                                                        drop(store);
+                                                        // Check if key exists in list store
+                                                        let lists = list_store_clone.lock().unwrap();
+                                                        if lists.contains_key(key) {
+                                                            drop(lists);
+                                                            stream.write_all(b"+list\r\n").unwrap();
+                                                        } else {
+                                                            drop(lists);
+                                                            stream.write_all(b"+none\r\n").unwrap();
+                                                        }
+                                                    }
+                                                }
+                                            }
                                             _ => {
                                                 stream.write_all(b"+PONG\r\n").unwrap();
                                             }
