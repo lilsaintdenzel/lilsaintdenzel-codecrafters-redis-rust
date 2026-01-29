@@ -1128,17 +1128,19 @@ fn main() {
                                                                 // Collect ACK responses with proper timeout handling
                                                                 let mut ack_count = 0;
                                                                 let mut remaining_replicas = Vec::new();
-                                                                
-                                                                // Use a longer timeout per replica since the test is expecting responses
+
                                                                 for mut replica in active_replicas {
-                                                                    // Check if overall timeout exceeded
-                                                                    if start_time.elapsed() >= timeout_duration {
+                                                                    // Calculate remaining time for the overall timeout
+                                                                    let elapsed = start_time.elapsed();
+                                                                    if elapsed >= timeout_duration {
                                                                         remaining_replicas.push(replica);
                                                                         continue;
                                                                     }
-                                                                    
-                                                                    // Set a reasonable timeout for each replica response
-                                                                    replica.set_read_timeout(Some(Duration::from_millis(1000))).ok();
+
+                                                                    // Set per-replica timeout to remaining time (capped at 1000ms for responsiveness)
+                                                                    let remaining = timeout_duration - elapsed;
+                                                                    let per_replica_timeout = remaining.min(Duration::from_millis(1000));
+                                                                    replica.set_read_timeout(Some(per_replica_timeout)).ok();
                                                                     
                                                                     let mut ack_buffer = [0; 1024];
                                                                     match replica.read(&mut ack_buffer) {
