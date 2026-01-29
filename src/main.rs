@@ -1129,7 +1129,7 @@ fn main() {
                                                                 let elapsed = start_time.elapsed();
                                                                 let base_timeout = Duration::from_millis(1000);
                                                                 // Subtract elapsed time plus a buffer for thread spawn/join overhead
-                                                                let overhead_buffer = Duration::from_millis(80);
+                                                                let overhead_buffer = Duration::from_millis(40);
                                                                 let read_timeout = base_timeout
                                                                     .saturating_sub(elapsed)
                                                                     .saturating_sub(overhead_buffer)
