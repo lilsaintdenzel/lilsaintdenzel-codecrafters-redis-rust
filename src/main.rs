@@ -182,6 +182,19 @@ fn parse_multiple_redis_commands(buffer: &[u8], n: usize) -> Vec<Vec<String>> {
     commands
 }
 
+// Calculate the RESP byte size of a command from its parsed arguments
+fn calculate_command_size(args: &[String]) -> usize {
+    // *N\r\n for the array header
+    let header = format!("*{}\r\n", args.len());
+    let mut size = header.len();
+    // For each argument: $len\r\n<data>\r\n
+    for arg in args {
+        let len_line = format!("${}\r\n", arg.len());
+        size += len_line.len() + arg.len() + 2; // +2 for \r\n after data
+    }
+    size
+}
+
 fn parse_length_encoding(bytes: &[u8], pos: &mut usize) -> Option<u64> {
     if *pos >= bytes.len() {
         return None;
@@ -775,9 +788,12 @@ fn main() {
                                 } else {
                                     // Process each command found in the buffer
                                     for args in commands {
+                                        // Calculate this command's byte size for offset tracking
+                                        let cmd_size = calculate_command_size(&args) as u64;
+
                                         if !args.is_empty() {
                                             let command = args[0].to_uppercase();
-                                            
+
                                             match command.as_str() {
                                                 "SET" => {
                                                     // Process SET command silently (no response to master)
@@ -785,7 +801,7 @@ fn main() {
                                                         let key = &args[1];
                                                         let value = &args[2];
                                                         let mut expires_at = None;
-                                                        
+
                                                         // Check for expiration options (PX milliseconds)
                                                         if args.len() >= 5 {
                                                             let option = args[3].to_uppercase();
@@ -799,22 +815,24 @@ fn main() {
                                                                 }
                                                             }
                                                         }
-                                                        
+
                                                         let stored_value = StoredValue {
                                                             value: value.clone(),
                                                             expires_at,
                                                         };
-                                                        
+
                                                         let mut store = store_for_replication.lock().unwrap();
                                                         store.insert(key.clone(), stored_value);
                                                         // Note: No response sent to master for propagated commands
                                                     }
+                                                    // Add this command's bytes to offset
+                                                    replica_offset += cmd_size;
                                                 }
                                                 "REPLCONF" => {
                                                     // Handle REPLCONF GETACK command
                                                     if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
                                                         // Respond with REPLCONF ACK <current_offset>
-                                                        // The offset should only include commands processed BEFORE this GETACK request
+                                                        // Report offset BEFORE adding this GETACK's bytes
                                                         let offset_str = replica_offset.to_string();
                                                         let response = format!(
                                                             "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
@@ -826,13 +844,15 @@ fn main() {
                                                             break;
                                                         }
                                                     }
+                                                    // Add this command's bytes to offset after reporting
+                                                    replica_offset += cmd_size;
                                                 }
                                                 "RPUSH" => {
                                                     // Process RPUSH command silently (no response to master)
                                                     if args.len() >= 3 {
                                                         let key = &args[1];
                                                         let values = &args[2..];
-                                                        
+
                                                         let mut lists = list_store_for_replication.lock().unwrap();
                                                         let list = lists.entry(key.clone()).or_insert_with(Vec::new);
                                                         for value in values {
@@ -840,13 +860,15 @@ fn main() {
                                                         }
                                                         // Note: No response sent to master for propagated commands
                                                     }
+                                                    // Add this command's bytes to offset
+                                                    replica_offset += cmd_size;
                                                 }
                                                 "LPUSH" => {
                                                     // Process LPUSH command silently (no response to master)
                                                     if args.len() >= 3 {
                                                         let key = &args[1];
                                                         let values = &args[2..];
-                                                        
+
                                                         let mut lists = list_store_for_replication.lock().unwrap();
                                                         let list = lists.entry(key.clone()).or_insert_with(Vec::new);
                                                         for value in values {
@@ -854,15 +876,16 @@ fn main() {
                                                         }
                                                         // Note: No response sent to master for propagated commands
                                                     }
+                                                    // Add this command's bytes to offset
+                                                    replica_offset += cmd_size;
                                                 }
                                                 _ => {
-                                                    // For other commands (like PING), just continue
+                                                    // For other commands (like PING), add bytes to offset
+                                                    replica_offset += cmd_size;
                                                 }
                                             }
                                         }
                                     }
-                                    // Add buffer size to offset for all commands processed
-                                    replica_offset += n as u64;
                                 }
                             }
                             Err(e) => {
