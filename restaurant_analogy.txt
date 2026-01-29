@@ -838,6 +838,7 @@ fn main() {
 - **LPOP**: "Serve the next customer in line!" → Removes and returns the first item from the queue
 - **LLEN**: "How many items in order queue?" → Returns total count of items in the queue (queue length check)
 - **LRANGE**: "Show me items from order queue!" → Returns items between start and stop positions (inclusive)
+- **TYPE**: "What kind of item is this?" → Returns "string" for menu items, "list" for order queues, "none" if not found
 - **CONFIG GET**: Questions about restaurant setup and kitchen location
 - **KEYS**: "What's on the menu?" with search capabilities
 - **INFO**: Restaurant status, type, and tracking information
@@ -1252,4 +1253,33 @@ Example service flow:
 - Managers can monitor order flow across all tables
 - Perfect for tracking multi-course meals and timed service
 
-This restaurant system is now enterprise-ready and provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, quality assurance verification, multiple order processing, queue-based order management with flexible viewing, recipe persistence, and multi-customer handling capabilities with maximum reliability!
+**NEW: Item Classification System (TYPE Command)**
+
+The restaurant now offers instant item classification for staff and customers who want to know what kind of resource they're looking at:
+
+**Classification Features:**
+- TYPE allows anyone to instantly discover what type of item is stored under any name: "TYPE table5" → "+list\r\n" (it's an order queue!)
+- Returns "string" for regular menu items (SET items): "TYPE daily-special" → "+string\r\n"
+- Returns "list" for order queues (RPUSH/LPUSH items): "TYPE kitchen-queue" → "+list\r\n"
+- Returns "none" for items that don't exist: "TYPE unknown-table" → "+none\r\n"
+- Uses simple string response format (+type\r\n) for easy parsing
+
+**Practical Restaurant Scenarios:**
+- "TYPE daily-special" → "string" (it's a menu item with a description)
+- "TYPE table8-orders" → "list" (it's an order queue with multiple items)
+- "TYPE closed-section" → "none" (nothing stored under that name)
+- Helps staff understand what operations are available for each resource
+
+**Business Benefits:**
+- Quickly understand what kind of data is stored without guessing
+- Know whether to use GET (for menu items) or LRANGE (for order queues)
+- Verify items exist before attempting operations
+- Essential for building smart restaurant systems that adapt to data types
+
+**Implementation Details:**
+- First checks the main menu/order storage (string store) for the key
+- If not found, checks the order queue storage (list store)
+- If not in either store, returns "none"
+- Thread-safe access to both stores ensures accurate results
+
+This restaurant system is now enterprise-ready and provides excellent customer service with complete franchise management support, two-way headquarters communication, automatic registration, real-time menu synchronization, franchise status monitoring, quality assurance verification, multiple order processing, queue-based order management with flexible viewing, item type classification, recipe persistence, and multi-customer handling capabilities with maximum reliability!

@@ -36,6 +36,7 @@ The librarians are specially trained to understand the library's cataloging syst
    - **If they say "LPOP [reading-list]" → removes and returns the first book from the reading list (checking out the next book to read)**
    - **If they say "LLEN [reading-list]" → returns the total count of books in that reading list (or 0 if list doesn't exist)**
    - **If they say "LRANGE [reading-list] [start] [stop]" → shows books from the reading list between the start and stop positions (both inclusive)**
+   - **If they say "TYPE [key]" → tells the visitor what kind of item is stored under that name ("string" for regular catalog entries, "list" for reading lists, "none" if not found)**
    - **If they say "CONFIG GET [setting]" → provides information about the library's configuration (like where archive files are stored)**
    - **If they say "KEYS [pattern]" → shows all currently available titles in the catalog (excluding expired exhibits)**
    - **If they say "INFO replication" → provides information about the library's role and replication status (reports role:master with master_replid and master_repl_offset for main library, role:slave for replica library)**
@@ -1241,4 +1242,33 @@ Example workflow:
 3. "LRANGE fiction-series 3 4" → ["book4", "book5"] (view remaining books)
 4. "LRANGE fiction-series 1 3" → ["book2", "book3", "book4"] (view middle section)
 
-The library system is now enterprise-ready - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, real-time collection synchronization, branch status monitoring, quality assurance verification, multiple instruction processing, reading list management with flexible browsing capabilities, and respond appropriately to all visitor needs with maximum reliability!
+**NEW: Item Classification System (TYPE Command)**
+
+The library now offers instant item classification for visitors who want to know what kind of resource they're looking at:
+
+**Classification Features:**
+- TYPE allows visitors to instantly discover what type of item is stored under any name: "TYPE mystery-novels" → "+list\r\n" (it's a reading list!)
+- Returns "string" for regular catalog entries (SET items): "TYPE author-bio" → "+string\r\n"
+- Returns "list" for reading lists (RPUSH/LPUSH items): "TYPE summer-reading" → "+list\r\n"
+- Returns "none" for items that don't exist: "TYPE unknown-item" → "+none\r\n"
+- Uses simple string response format (+type\r\n) for easy parsing
+
+**Practical Use Cases:**
+- "TYPE favorite-book" → "string" (it's a regular catalog entry with a value)
+- "TYPE books-to-read" → "list" (it's a reading list with multiple items)
+- "TYPE missing-item" → "none" (nothing stored under that name)
+- Helps visitors understand what operations are available for each item
+
+**Visitor Benefits:**
+- Quickly understand what kind of data is stored without guessing
+- Know whether to use GET (for strings) or LRANGE (for lists)
+- Verify items exist before attempting operations
+- Essential for building smart library applications that adapt to data types
+
+**Implementation Details:**
+- First checks the main catalog (string store) for the key
+- If not found, checks the reading list store (list store)
+- If not in either store, returns "none"
+- Thread-safe access to both stores ensures accurate results
+
+The library system is now enterprise-ready - it can handle different services, manage temporary exhibitions with expiration times, support multiple branches with full two-way coordination, real-time collection synchronization, branch status monitoring, quality assurance verification, multiple instruction processing, reading list management with flexible browsing capabilities, item type classification, and respond appropriately to all visitor needs with maximum reliability!
