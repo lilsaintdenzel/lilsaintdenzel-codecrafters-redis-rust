@@ -1125,10 +1125,15 @@ fn main() {
                                                                 }
 
                                                                 let ack_threshold = current_offset;
-                                                                // Account for elapsed time from sending GETACKs
+                                                                // Account for elapsed time and thread overhead
                                                                 let elapsed = start_time.elapsed();
                                                                 let base_timeout = Duration::from_millis(1000);
-                                                                let read_timeout = base_timeout.saturating_sub(elapsed).max(Duration::from_millis(100));
+                                                                // Subtract elapsed time plus a small buffer for thread spawn/join overhead
+                                                                let overhead_buffer = Duration::from_millis(20);
+                                                                let read_timeout = base_timeout
+                                                                    .saturating_sub(elapsed)
+                                                                    .saturating_sub(overhead_buffer)
+                                                                    .max(Duration::from_millis(100));
 
                                                                 // Spawn threads to read from each replica in parallel
                                                                 // Each thread returns (stream, acked) so we can recover all streams
