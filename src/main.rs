@@ -574,13 +574,21 @@ fn send_psync_to_master(stream: &mut TcpStream) -> Result<(), std::io::Error> {
     // *3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n
     let command = b"*3\r\n$5\r\nPSYNC\r\n$1\r\n?\r\n$2\r\n-1\r\n";
     stream.write_all(command)?;
-    
-    // Read response (should be +FULLRESYNC <REPL_ID> 0\r\n)
-    let mut buffer = [0; 1024];
-    let _n = stream.read(&mut buffer)?;
-    // Note: We're not consuming the RDB file here anymore since it might be causing issues
-    // The replica thread will handle any remaining data in the stream
-    
+
+    // Read ONLY the FULLRESYNC response line (e.g., +FULLRESYNC <REPL_ID> 0\r\n)
+    // We must read byte-by-byte to avoid consuming the RDB file and subsequent commands
+    let mut response = Vec::new();
+    let mut byte = [0u8; 1];
+    loop {
+        stream.read_exact(&mut byte)?;
+        response.push(byte[0]);
+        // Stop when we've read \r\n
+        if response.len() >= 2 && response[response.len()-2] == b'\r' && response[response.len()-1] == b'\n' {
+            break;
+        }
+    }
+    // The RDB file and any subsequent commands will be handled by the replica thread
+
     println!("Sent PSYNC to master");
     Ok(())
 }
