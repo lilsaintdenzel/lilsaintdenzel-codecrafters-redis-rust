@@ -1122,8 +1122,9 @@ fn main() {
                                                                 }
 
                                                                 let ack_threshold = current_offset;
-                                                                // Use fixed 1000ms read timeout - the test expects exactly 1000ms
-                                                                let read_timeout = Duration::from_millis(1000);
+                                                                // Subtract overhead for thread spawning/joining (~30ms)
+                                                                let adjusted_timeout = if timeout_ms > 30 { timeout_ms - 30 } else { timeout_ms };
+                                                                let read_timeout = Duration::from_millis(adjusted_timeout as u64);
 
                                                                 // Spawn threads to read from each replica in parallel
                                                                 // Each thread returns (stream, acked) so we can recover all streams
