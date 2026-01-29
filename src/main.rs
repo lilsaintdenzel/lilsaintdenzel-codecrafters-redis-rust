@@ -660,30 +660,92 @@ fn main() {
                                                 
                                                 // Check if there's command data after the RDB
                                                 if rdb_end < n {
-                                                    // There's data after RDB - process it as a command
+                                                    // There's data after RDB - process all commands in remaining data
                                                     rdb_consumed = true;
                                                     let remaining_data = &buffer[rdb_end..n];
                                                     let remaining_size = n - rdb_end;
-                                                    
-                                                    // Process the command that follows RDB
-                                                    if let Some(args) = parse_redis_command(remaining_data, remaining_size) {
-                                                        if !args.is_empty() && args[0].to_uppercase() == "REPLCONF" {
-                                                            if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
-                                                                let offset_str = replica_offset.to_string();
-                                                                let response = format!(
-                                                                    "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
-                                                                    offset_str.len(),
-                                                                    offset_str
-                                                                );
-                                                                if let Err(e) = master_stream.write_all(response.as_bytes()) {
-                                                                    println!("Failed to send REPLCONF ACK to master: {}", e);
-                                                                    break;
+
+                                                    // Parse all commands in the remaining data
+                                                    let remaining_commands = parse_multiple_redis_commands(remaining_data, remaining_size);
+
+                                                    if remaining_commands.is_empty() {
+                                                        // Try single command parser
+                                                        if let Some(args) = parse_redis_command(remaining_data, remaining_size) {
+                                                            let cmd_size = calculate_command_size(&args) as u64;
+                                                            if !args.is_empty() {
+                                                                let command = args[0].to_uppercase();
+                                                                match command.as_str() {
+                                                                    "SET" => {
+                                                                        if args.len() >= 3 {
+                                                                            let key = &args[1];
+                                                                            let value = &args[2];
+                                                                            let mut expires_at = None;
+                                                                            if args.len() >= 5 && args[3].to_uppercase() == "PX" {
+                                                                                if let Ok(ms) = args[4].parse::<u128>() {
+                                                                                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+                                                                                    expires_at = Some(now + ms);
+                                                                                }
+                                                                            }
+                                                                            let stored_value = StoredValue { value: value.clone(), expires_at };
+                                                                            let mut store = store_for_replication.lock().unwrap();
+                                                                            store.insert(key.clone(), stored_value);
+                                                                        }
+                                                                    }
+                                                                    "REPLCONF" => {
+                                                                        if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
+                                                                            let offset_str = replica_offset.to_string();
+                                                                            let response = format!(
+                                                                                "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
+                                                                                offset_str.len(), offset_str
+                                                                            );
+                                                                            let _ = master_stream.write_all(response.as_bytes());
+                                                                        }
+                                                                    }
+                                                                    _ => {}
                                                                 }
-                                                                replica_offset += remaining_size as u64;
-                                                                continue; // Skip normal processing since we handled it here
                                                             }
+                                                            replica_offset += cmd_size;
+                                                        }
+                                                    } else {
+                                                        // Process multiple commands
+                                                        for args in remaining_commands {
+                                                            let cmd_size = calculate_command_size(&args) as u64;
+                                                            if !args.is_empty() {
+                                                                let command = args[0].to_uppercase();
+                                                                match command.as_str() {
+                                                                    "SET" => {
+                                                                        if args.len() >= 3 {
+                                                                            let key = &args[1];
+                                                                            let value = &args[2];
+                                                                            let mut expires_at = None;
+                                                                            if args.len() >= 5 && args[3].to_uppercase() == "PX" {
+                                                                                if let Ok(ms) = args[4].parse::<u128>() {
+                                                                                    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis();
+                                                                                    expires_at = Some(now + ms);
+                                                                                }
+                                                                            }
+                                                                            let stored_value = StoredValue { value: value.clone(), expires_at };
+                                                                            let mut store = store_for_replication.lock().unwrap();
+                                                                            store.insert(key.clone(), stored_value);
+                                                                        }
+                                                                    }
+                                                                    "REPLCONF" => {
+                                                                        if args.len() >= 3 && args[1].to_uppercase() == "GETACK" && args[2] == "*" {
+                                                                            let offset_str = replica_offset.to_string();
+                                                                            let response = format!(
+                                                                                "*3\r\n$8\r\nREPLCONF\r\n$3\r\nACK\r\n${}\r\n{}\r\n",
+                                                                                offset_str.len(), offset_str
+                                                                            );
+                                                                            let _ = master_stream.write_all(response.as_bytes());
+                                                                        }
+                                                                    }
+                                                                    _ => {}
+                                                                }
+                                                            }
+                                                            replica_offset += cmd_size;
                                                         }
                                                     }
+                                                    continue; // Skip normal processing since we handled commands here
                                                 } else {
                                                     // Only RDB data in this buffer, no command follows
                                                     rdb_consumed = true;
