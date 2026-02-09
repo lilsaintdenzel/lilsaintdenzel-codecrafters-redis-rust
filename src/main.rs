@@ -27,6 +27,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 //   - Master = Main restaurant location
 //   - Replicas = Branch locations that mirror the main menu
 // - Command propagation = Head chef's recipes sent to all branches
+// - Streams (XADD) = Kitchen order ticket rail
+//   - XADD = Clipping a new order ticket onto the rail in time order
+//   - Stream entries = Individual order tickets with details (table number, dishes, etc.)
+//   - Entry IDs = Timestamps on each ticket for chronological tracking
 
 // Library Analogies:
 // - Redis Server = A library with multiple services
@@ -45,6 +49,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 //   - Master = Central library
 //   - Replicas = Branch libraries that maintain copies of the catalog
 // - Command propagation = Catalog updates sent to all branches
+// - Streams (XADD) = Library event log / activity journal
+//   - XADD = Recording a new event in the journal (book checked out, returned, etc.)
+//   - Stream entries = Individual log entries with details (patron, book, action, etc.)
+//   - Entry IDs = Timestamps on each log entry for chronological ordering
 
 #[derive(Clone)]
 struct StoredValue {
