@@ -66,6 +66,16 @@ type MasterOffset = Arc<Mutex<u64>>;
 // Each client has a channel sender to receive (list_key, popped_element)
 type BlockedClients = Arc<Mutex<HashMap<String, VecDeque<mpsc::Sender<(String, String)>>>>>;
 
+// Stream entry with ID and key-value pairs
+#[derive(Clone)]
+struct StreamEntry {
+    id: String,
+    fields: Vec<(String, String)>,  // key-value pairs
+}
+
+// Stream store: key -> vector of entries
+type StreamStore = Arc<Mutex<HashMap<String, Vec<StreamEntry>>>>;
+
 fn propagate_command_to_replicas(replicas: &ReplicaConnections, command: &[String]) {
     let mut replicas_guard = replicas.lock().unwrap();
     let mut active_replicas = Vec::new();
@@ -603,7 +613,8 @@ fn main() {
     let replica_connections: ReplicaConnections = Arc::new(Mutex::new(Vec::new()));
     let master_offset: MasterOffset = Arc::new(Mutex::new(0));
     let blocked_clients: BlockedClients = Arc::new(Mutex::new(HashMap::new()));
-    
+    let stream_store: StreamStore = Arc::new(Mutex::new(HashMap::new()));
+
     // If this is a replica, connect to master and perform handshake
     if let Some((master_host, master_port)) = &config.replicaof {
         match connect_to_master(master_host, *master_port) {
@@ -983,6 +994,7 @@ fn main() {
                 let replicas_clone = Arc::clone(&replica_connections);
                 let master_offset_clone = Arc::clone(&master_offset);
                 let blocked_clients_clone = Arc::clone(&blocked_clients);
+                let stream_store_clone = Arc::clone(&stream_store);
                 let config_clone = config.clone();
                 thread::spawn(move || {
                     let mut buffer = [0; 1024];
@@ -1620,6 +1632,28 @@ fn main() {
                                                     stream.write_all(b"-ERR wrong number of arguments for 'blpop' command\r\n").unwrap();
                                                 }
                                             }
+                                            "XADD" => {
+                                                // XADD key id field value [field value ...]
+                                                if args.len() >= 5 && (args.len() - 3) % 2 == 0 {
+                                                    let key = &args[1];
+                                                    let id = &args[2];
+                                                    let mut fields = Vec::new();
+                                                    let mut i = 3;
+                                                    while i + 1 < args.len() {
+                                                        fields.push((args[i].clone(), args[i + 1].clone()));
+                                                        i += 2;
+                                                    }
+                                                    let entry = StreamEntry {
+                                                        id: id.clone(),
+                                                        fields,
+                                                    };
+                                                    let mut streams = stream_store_clone.lock().unwrap();
+                                                    streams.entry(key.clone()).or_insert_with(Vec::new).push(entry);
+                                                    drop(streams);
+                                                    let response = format!("${}\r\n{}\r\n", id.len(), id);
+                                                    stream.write_all(response.as_bytes()).unwrap();
+                                                }
+                                            }
                                             "TYPE" => {
                                                 if args.len() >= 2 {
                                                     let key = &args[1];
@@ -1638,7 +1672,15 @@ fn main() {
                                                             stream.write_all(b"+list\r\n").unwrap();
                                                         } else {
                                                             drop(lists);
-                                                            stream.write_all(b"+none\r\n").unwrap();
+                                                            // Check if key exists in stream store
+                                                            let streams = stream_store_clone.lock().unwrap();
+                                                            if streams.contains_key(key) {
+                                                                drop(streams);
+                                                                stream.write_all(b"+stream\r\n").unwrap();
+                                                            } else {
+                                                                drop(streams);
+                                                                stream.write_all(b"+none\r\n").unwrap();
+                                                            }
                                                         }
                                                     }
                                                 }
